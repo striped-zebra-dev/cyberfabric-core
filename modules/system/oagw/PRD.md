@@ -8,12 +8,14 @@
   - [Target Users](#target-users)
   - [Problems Solved](#problems-solved)
   - [Success Criteria](#success-criteria)
+  - [Deployment Flexibility](#deployment-flexibility)
 - [Actors](#actors)
   - [Human](#human)
   - [System](#system)
 - [Functional Requirements](#functional-requirements)
   - [Upstream Management](#upstream-management)
   - [Route Management](#route-management)
+  - [Enable/Disable Semantics](#enabledisable-semantics)
   - [Request Proxying](#request-proxying)
   - [Authentication Injection](#authentication-injection)
   - [Rate Limiting](#rate-limiting)
@@ -44,6 +46,21 @@
 
 OAGW manages all outbound API requests from CyberFabric to external services.
 
+**Component Architecture**: OAGW is composed of three distinct components that work together:
+- **API Handler**: Entry point for all requests, handles incoming auth/rate limiting, routes to CP or DP
+- **Data Plane (CP)**: Orchestrates proxy requests, executes calls to external services
+- **Control Plane (DP)**: Manages configuration data (upstreams/routes/plugins) with multi-layer caching
+
+**Deployment Flexibility**: Modkit framework supports both single-executable (all components in-process) and microservice (components deployed separately) deployment modes.
+
+See [DESIGN.md](./DESIGN.md#component-architecture) for detailed architecture.
+
+**Terminology Note**: Due to historical naming, crate names don't match component terminology:
+- `oagw-cp` crate implements the **Data Plane** (proxy/request processing)
+- `oagw-dp` crate implements the **Control Plane** (config management)
+
+Throughout this document we use industry-standard terminology. See DESIGN.md for full mapping details.
+
 ### Key Concepts
 
 | Concept  | Definition                                                                                |
@@ -51,6 +68,9 @@ OAGW manages all outbound API requests from CyberFabric to external services.
 | Upstream | External service target (scheme/host/port, protocol, auth, headers, rate limits)          |
 | Route    | API path on an upstream. Matches by method/path/query (HTTP), service/method (gRPC), etc. |
 | Plugin   | Modular processor: Auth (credential injection), Guard (validation), Transform (mutation)  |
+| API Handler | Entry point component that routes requests based on path                               |
+| Data Plane | Orchestrates proxy requests and executes calls to external services                  |
+| Control Plane | Manages configuration data with database access and multi-layer caching                 |
 
 ### Target Users
 
@@ -71,6 +91,27 @@ OAGW manages all outbound API requests from CyberFabric to external services.
 - Zero credential exposure in logs/errors
 - 99.9% availability
 - Complete audit trail
+
+### Deployment Flexibility
+
+OAGW supports two deployment modes via the modkit framework:
+
+**Single-Executable Mode**:
+- All three components (API Handler, CP, DP) run in a single process
+- Communication via direct in-process function calls (zero serialization overhead)
+- Simpler deployment, ideal for development and small-scale deployments
+- Shared in-memory resources (L1 cache, connection pools)
+
+**Microservice Mode**:
+- Components deployed as separate services (each horizontally scalable)
+- Communication via RPC (modkit provides transparent transport)
+- Independent scaling: scale CP for proxy load, scale DP for config operations
+- Example topology: 1 API Handler, 10 CP instances, 2 DP instances
+- Shared L2 cache (Redis) for config across DP instances
+
+**Deployment Abstraction**: OAGW code is deployment-agnostic. Modkit handles service discovery, load balancing, and transparent RPC based on deployment configuration.
+
+For module structure and deployment architecture, see [DESIGN.md](./DESIGN.md#module-structure).
 
 ## Actors
 
@@ -96,19 +137,49 @@ OAGW manages all outbound API requests from CyberFabric to external services.
 
 CRUD for upstream configurations. Each upstream defines: server endpoints, protocol, auth, headers, rate limits.
 
+**Component**: Control Plane handles all upstream CRUD operations via `/api/oagw/v1/upstreams/*` endpoints.
+
 ### Route Management
 
 CRUD for routes. Routes define matching rules (method, path, query allowlist) mapping requests to upstreams.
 
+**Component**: Control Plane handles all route CRUD operations via `/api/oagw/v1/routes/*` endpoints.
+
+### Enable/Disable Semantics
+
+Upstreams and routes support an `enabled` boolean field (default: `true`).
+
+**Behavior**:
+- **Disabled upstream**: All proxy requests rejected with `503 Service Unavailable` (gateway error). Upstream remains visible in list/get operations.
+- **Disabled route**: Route excluded from matching; request falls through to next match or returns 404
+
+**Hierarchical Inheritance**:
+- If ancestor tenant disables an upstream, it is disabled for all descendants
+- Descendant cannot re-enable an ancestor-disabled resource
+
+**Use Cases**:
+- Temporary maintenance without deleting configuration
+- Emergency circuit break at management layer
+- Gradual rollout (enable route for subset of tenants)
+
 ### Request Proxying
 
 Proxy requests via `{METHOD} /api/oagw/v1/proxy/{alias}[/{path}][?{query}]`. Resolves upstream by alias, matches route, transforms and forwards.
+
+**Component Flow**:
+1. API Handler receives request at `/api/oagw/v1/proxy/*`
+2. Routes to Data Plane
+3. Data Plane calls Control Plane for config resolution (upstream, route)
+4. Data Plane executes plugins and proxies to external service
+5. Returns response to client
 
 No automatic retries are performed by OAGW. Each inbound request results in at most one upstream attempt; retry behavior is client-managed.
 
 ### Authentication Injection
 
 Inject credentials into outbound requests. Supported: API Key, Basic Auth, OAuth2 Client Credentials, Bearer Token. Credentials retrieved from credential store at request time.
+
+**Component**: Data Plane executes auth plugins during proxy request processing.
 
 ### Rate Limiting
 
@@ -120,13 +191,19 @@ Transform request/response headers: set/add/remove, passthrough control, automat
 
 ### Plugin System
 
-Three plugin types:
+OAGW provides extensibility through a plugin system with three plugin types:
 
-- **Auth** (`gts.x.core.oagw.plugin.auth.v1~*`): one per upstream, credential injection
-- **Guard** (`gts.x.core.oagw.plugin.guard.v1~*`): validation/policy enforcement, can reject
-- **Transform** (`gts.x.core.oagw.plugin.transform.v1~*`): request/response mutation
+- **Auth** (`gts.x.core.oagw.plugin.auth.v1~*`): Credential injection (API key, OAuth2, Bearer token, Basic auth)
+- **Guard** (`gts.x.core.oagw.plugin.guard.v1~*`): Validation/policy enforcement, can reject requests (timeout, CORS, rate limiting)
+- **Transform** (`gts.x.core.oagw.plugin.transform.v1~*`): Request/response mutation (logging, metrics, request ID)
 
-Execution order: Auth → Guards → Transform(request) → Upstream → Transform(response/error)
+**Component**: Data Plane executes all plugins during proxy request processing. Plugins are defined in Control Plane (CRUD via `/api/oagw/v1/plugins/*`) and loaded by Data Plane.
+
+**Plugin Types**:
+- **Built-in plugins**: Included in Data Plane crate (`oagw-cp`), implemented in Rust
+- **External plugins**: Separate modkit modules implementing plugin traits from `oagw-core`
+
+**Execution order**: Auth → Guards → Transform(request) → Upstream → Transform(response/error)
 
 Plugin chain composition: upstream plugins execute before route plugins.
 
@@ -135,6 +212,8 @@ Plugin API contract: plugin definitions are immutable after creation.
 Justification: immutability guarantees deterministic behavior for attached routes/upstreams, improves auditability, and avoids in-place source mutation risks. Updates are performed by creating a new plugin version and re-binding references.
 
 Circuit breaker is a core gateway resilience capability (configured as core policy), not a plugin.
+
+For plugin trait definitions and architecture, see [DESIGN.md](./DESIGN.md#plugin-system-overview).
 
 ### Streaming Support
 
@@ -365,13 +444,26 @@ Forward events as received, handle connection lifecycle (open/close/error).
 
 ## API Endpoints
 
+All requests enter through API Handler, which routes based on path:
+
+**Management API** (routed to Control Plane):
 ```
 POST/GET/PUT/DELETE /api/oagw/v1/upstreams[/{id}]
 POST/GET/PUT/DELETE /api/oagw/v1/routes[/{id}]
 POST/GET/DELETE /api/oagw/v1/plugins[/{id}]
 GET /api/oagw/v1/plugins/{id}/source
+```
+
+**Proxy API** (routed to Data Plane):
+```
 {METHOD} /api/oagw/v1/proxy/{alias}[/{path}][?{query}]
 ```
+
+**Request Flow**:
+- Management operations: `API Handler → Control Plane`
+- Proxy operations: `API Handler → Data Plane → Control Plane (config) → Data Plane (execute)`
+
+See [DESIGN.md](./DESIGN.md#request-flow) for detailed flow diagrams.
 
 ## Dependencies
 
