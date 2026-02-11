@@ -8,3 +8,34 @@ name = "oagw_sdk"
 path = "src/lib.rs"
 
 [dependencies]
+# OAGW core types (for SharedProcessClient)
+oagw-core = { package = "cf-oagw-core", path = "../oagw-core" }
+
+# HTTP client - reqwest as specified in ADR (for RemoteProxyClient)
+reqwest = { workspace = true }
+http = { workspace = true }
+bytes = { workspace = true }
+
+# Async runtime - need rt-multi-thread for blocking API
+tokio = { workspace = true }
+futures = { workspace = true }
+futures-util = { workspace = true }
+async-trait = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Tracing
+tracing = { workspace = true }
+
+[dev-dependencies]
+httpmock = { workspace = true }
+tokio-test = { workspace = true }
+tempfile = { workspace = true }
+temp-env = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

@@ -67,6 +67,11 @@ members = [
     "modules/system/tenant_resolver/tenant_resolver-gw",
     "modules/system/tenant_resolver/plugins/static_tr_plugin",
     "modules/system/tenant_resolver/plugins/single_tenant_tr_plugin",
+    "modules/system/oagw/oagw-core",
+    "modules/system/oagw/oagw-sdk",
+    "modules/system/oagw/oagw-api",
+    "modules/system/oagw/oagw-cp",
+    "modules/system/oagw/oagw-dp",
 ]
 exclude = ["fuzz"]
 resolver = "3"
@@ -304,6 +309,8 @@ http-body = "1"
 
 # HTTP client helpers
 rand = "0.9"
+# Note: reqwest 0.12+ required for http 1.x compatibility (used by OAGW SDK)
+reqwest = { version = "0.12", features = ["json", "stream"] }
 
 # Synchronous locks for better performance
 parking_lot = "0.12"

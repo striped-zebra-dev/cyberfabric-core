@@ -8,4 +8,13 @@ name = "oagw_core"
 path = "src/lib.rs"
 
 [dependencies]
-cf-oagw-sdk = { path = "../oagw-sdk" }
+# HTTP types
+http = { workspace = true }
+bytes = { workspace = true }
+
+# Async
+async-trait = { workspace = true }
+futures = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
