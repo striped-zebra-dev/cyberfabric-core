@@ -2,11 +2,26 @@
 name = "cf-oagw-cp"
 version.workspace = true
 edition.workspace = true
-description = "Data Plane implementation - proxy orchestration and plugin execution"
+description = "Control Plane implementation - configuration management and caching"
 
 [lib]
 name = "oagw_cp"
 path = "src/lib.rs"
 
+[features]
+test-utils = []
+
 [dependencies]
-cf-oagw-core = { path = "../oagw-core" }
+cf-oagw-sdk = { path = "../oagw-sdk" }
+modkit = { workspace = true }
+inventory = { workspace = true }
+async-trait = "0.1"
+uuid = { version = "1", features = ["v4", "serde"] }
+dashmap = "6.1"
+thiserror = "2.0"
+arc-swap = "1"
+tracing = "0.1"
+anyhow = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }

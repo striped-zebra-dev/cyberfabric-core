@@ -1,13 +1,14 @@
-//! Data Plane implementation for OAGW.
+//! Control Plane implementation for OAGW.
 //!
-//! This crate implements the Data Plane component responsible for:
-//! - Proxy orchestration and request execution
-//! - Plugin execution (auth, guard, transform)
-//! - HTTP calls to external upstream services
-//!
-//! Note: The crate name `oagw-cp` is retained for historical reasons.
-//! This crate implements the Data Plane, not the Control Plane.
+//! This crate implements the Control Plane component responsible for:
+//! - Configuration management (CRUD for upstreams, routes, plugins)
+//! - In-memory repository storage (DashMap-based)
+//! - Alias resolution and route matching
 
-#![allow(dead_code)]
+pub mod module;
+pub use module::OagwCpModule;
 
-pub mod control_plane;
+pub(crate) mod domain;
+
+#[cfg(any(test, feature = "test-utils"))]
+pub mod test_support;
