@@ -21,6 +21,8 @@ pub use oagw_dp::OagwDpModule;
 pub mod api;
 #[doc(hidden)]
 pub mod config;
+#[doc(hidden)]
+pub mod client;
 
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test_support;
