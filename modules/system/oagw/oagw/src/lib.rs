@@ -15,6 +15,8 @@ pub use module::OutboundApiGatewayModule;
 pub mod api;
 #[doc(hidden)]
 pub mod config;
+#[doc(hidden)]
+pub mod client;
 pub(crate) mod domain;
 pub(crate) mod infra;
 

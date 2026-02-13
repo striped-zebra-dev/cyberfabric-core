@@ -4,6 +4,8 @@ use async_trait::async_trait;
 use modkit::api::OpenApiRegistry;
 use modkit::{Module, ModuleCtx, RestApiCapability};
 use oagw_sdk::api::ServiceGatewayClientV1;
+use oagw_sdk::client::OagwClientApi;
+use crate::client::OagwClient;
 use crate::domain::credential::CredentialResolver;
 use tracing::info;
 
@@ -65,6 +67,11 @@ impl Module for OutboundApiGatewayModule {
 
         ctx.client_hub()
             .register::<dyn ServiceGatewayClientV1>(oagw.clone());
+
+        
+
+        let client: Arc<dyn OagwClientApi>  = Arc::new(OagwClient::from_ctx(ctx)?);
+        ctx.client_hub().register::<dyn OagwClientApi>(client);
 
         let app_state = AppState { cp, dp };
 

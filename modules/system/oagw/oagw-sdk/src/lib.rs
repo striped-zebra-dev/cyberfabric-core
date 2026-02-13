@@ -1,4 +1,6 @@
 pub mod api;
+pub mod body;
+pub mod client;
 pub mod error;
 pub mod plugin;
 
@@ -13,5 +15,8 @@ pub use models::{
     UpdateRouteRequest, UpdateRouteRequestBuilder, UpdateUpstreamRequest,
     UpdateUpstreamRequestBuilder, Upstream, Window,
 };
+pub mod request;
+pub mod response;
+pub mod sse;
 
 pub use api::ServiceGatewayClientV1;

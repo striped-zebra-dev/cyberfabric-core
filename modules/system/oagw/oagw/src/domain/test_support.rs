@@ -119,6 +119,13 @@ pub struct TestAppState {
     pub facade: Arc<dyn ServiceGatewayClientV1>,
 }
 
+impl TestAppState {
+    /// Get the DataPlaneService for use with OagwClient in tests
+    pub fn data_plane(&self) -> Arc<dyn DataPlaneService> {
+        self.state.dp.clone()
+    }
+}
+
 /// Build an `AppState` and facade for integration tests.
 ///
 /// Use `result.state` when constructing an axum test router and
