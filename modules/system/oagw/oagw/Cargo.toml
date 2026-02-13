@@ -38,7 +38,7 @@ async-stream = { version = "0.3", optional = true }
 futures = { version = "0.3", optional = true }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time"] }
+tokio = { version = "1.47", features = ["macros", "rt"] }
 cf-oagw = { path = ".", features = ["test-utils"] }
 tower = { version = "0.5", features = ["util"] }
 hyper = "1.5"

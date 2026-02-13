@@ -1,4 +1,6 @@
 use serde::{Deserialize, Serialize};
+use http::StatusCode;
+use bytes::Bytes;
 
 // ---------------------------------------------------------------------------
 // RFC 9457 Problem Details
@@ -191,6 +193,44 @@ impl OagwError {
     }
 }
 
+// ===========================================================================
+// Client error enum
+// ===========================================================================
+
+/// Client errors
+#[derive(Debug, thiserror::Error)]
+pub enum ClientError {
+    #[error("Request build error: {0}")]
+    BuildError(String),
+
+    #[error("Connection error: {0}")]
+    Connection(String),
+
+    #[error("Timeout: {0}")]
+    Timeout(String),
+
+    #[error("TLS error: {0}")]
+    Tls(String),
+
+    #[error("Protocol error: {0}")]
+    Protocol(String),
+
+    #[error("Connection closed")]
+    ConnectionClosed,
+
+    #[error("Invalid response: {0}")]
+    InvalidResponse(String),
+
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("HTTP error: {status}")]
+    Http { status: StatusCode, body: Bytes },
+
+    #[error("Serialization error: {0}")]
+    Serialization(#[from] serde_json::Error),
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -322,5 +362,85 @@ mod tests {
         let json = serde_json::to_string(&pd).unwrap();
         let pd2: ProblemDetails = serde_json::from_str(&json).unwrap();
         assert_eq!(pd, pd2);
+    }
+    
+    #[test]
+    fn test_client_error_display() {
+        let err = ClientError::BuildError("test error".into());
+        assert_eq!(err.to_string(), "Request build error: test error");
+    }
+
+    #[test]
+    fn test_client_error_build_error() {
+        let err = ClientError::BuildError("invalid header".into());
+        assert_eq!(err.to_string(), "Request build error: invalid header");
+    }
+
+    #[test]
+    fn test_client_error_connection() {
+        let err = ClientError::Connection("connection refused".into());
+        assert_eq!(err.to_string(), "Connection error: connection refused");
+    }
+
+    #[test]
+    fn test_client_error_timeout() {
+        let err = ClientError::Timeout("request timeout".into());
+        assert_eq!(err.to_string(), "Timeout: request timeout");
+    }
+
+    #[test]
+    fn test_client_error_tls() {
+        let err = ClientError::Tls("certificate validation failed".into());
+        assert_eq!(err.to_string(), "TLS error: certificate validation failed");
+    }
+
+    #[test]
+    fn test_client_error_protocol() {
+        let err = ClientError::Protocol("invalid HTTP version".into());
+        assert_eq!(err.to_string(), "Protocol error: invalid HTTP version");
+    }
+
+    #[test]
+    fn test_client_error_connection_closed() {
+        let err = ClientError::ConnectionClosed;
+        assert_eq!(err.to_string(), "Connection closed");
+    }
+
+    #[test]
+    fn test_client_error_invalid_response() {
+        let err = ClientError::InvalidResponse("malformed JSON".into());
+        assert_eq!(err.to_string(), "Invalid response: malformed JSON");
+    }
+
+    #[test]
+    fn test_client_error_io() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::Other, "disk error");
+        let err = ClientError::from(io_err);
+        assert!(matches!(err, ClientError::Io(_)));
+        assert!(err.to_string().contains("disk error"));
+    }
+
+    #[test]
+    fn test_client_error_http() {
+        let err = ClientError::Http {
+            status: StatusCode::NOT_FOUND,
+            body: Bytes::from("not found"),
+        };
+        assert_eq!(err.to_string(), "HTTP error: 404 Not Found");
+    }
+
+    #[test]
+    fn test_client_error_serialization() {
+        let json_err = serde_json::from_str::<serde_json::Value>("{invalid json}").unwrap_err();
+        let err = ClientError::from(json_err);
+        assert!(matches!(err, ClientError::Serialization(_)));
+    }
+
+    #[test]
+    fn test_client_error_debug() {
+        let err = ClientError::BuildError("test".into());
+        let debug = format!("{:?}", err);
+        assert!(debug.contains("BuildError"));
+        assert!(debug.contains("test"));
     }
 }
