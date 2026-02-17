@@ -35,6 +35,10 @@ pub fn domain_error_to_problem(err: DomainError) -> Problem {
         DomainError::InvalidRequest { message } => {
             Problem::new(StatusCode::BAD_REQUEST, "Invalid Request", message)
         }
+
+        DomainError::PathTraversalBlocked { message } => {
+            Problem::new(StatusCode::FORBIDDEN, "Path Traversal Blocked", message)
+        }
     }
 }
 

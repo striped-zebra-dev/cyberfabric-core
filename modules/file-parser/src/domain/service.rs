@@ -1,9 +1,9 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use bytes::Bytes;
 use modkit_macros::domain_model;
-use tracing::{debug, info, instrument};
+use tracing::{debug, info, instrument, warn};
 
 use crate::domain::error::DomainError;
 use crate::domain::ir::ParsedDocument;
@@ -39,12 +39,16 @@ pub struct FileParserService {
 #[derive(Debug, Clone)]
 pub struct ServiceConfig {
     pub max_file_size_bytes: usize,
+    /// Canonicalized base directory for local file access. When `Some`, only
+    /// paths that start with this prefix are allowed by `parse_local`.
+    pub allowed_local_base_dir: Option<PathBuf>,
 }
 
 impl Default for ServiceConfig {
     fn default() -> Self {
         Self {
             max_file_size_bytes: 100 * 1024 * 1024, // 100 MB
+            allowed_local_base_dir: None,
         }
     }
 }
@@ -85,18 +89,51 @@ impl FileParserService {
         }
     }
 
-    /// Parse a file from a local path
+    /// Parse a file from a local path.
+    ///
+    /// The requested path is validated before any file-system access:
+    /// 1. `..` path components are rejected outright.
+    /// 2. The path is canonicalized (resolving symlinks).
+    /// 3. If `allowed_local_base_dir` is configured, the canonical path must
+    ///    fall under that directory.
     #[instrument(skip(self), fields(path = %path.display()))]
     pub async fn parse_local(&self, path: &Path) -> Result<ParsedDocument, DomainError> {
         info!("Parsing file from local path");
+
+        // --- Path traversal protection ---
+        Self::validate_local_path(path)?;
 
         // Check if file exists
         if !path.exists() {
             return Err(DomainError::file_not_found(path.display().to_string()));
         }
 
+        // Canonicalize to resolve symlinks before base-dir check
+        let canonical = path.canonicalize().map_err(|e| {
+            DomainError::io_error(format!(
+                "Cannot canonicalize path '{}': {e}",
+                path.display()
+            ))
+        })?;
+
+        // Enforce base directory (after symlink resolution)
+        if let Some(ref base) = self.config.allowed_local_base_dir
+            && !canonical.starts_with(base)
+        {
+            warn!(
+                requested = %path.display(),
+                canonical = %canonical.display(),
+                base_dir = %base.display(),
+                "Path traversal blocked: canonical path outside allowed base directory"
+            );
+            return Err(DomainError::path_traversal_blocked(format!(
+                "Access denied: '{}' is outside the allowed base directory",
+                path.display()
+            )));
+        }
+
         // Extract extension
-        let extension = path
+        let extension = canonical
             .extension()
             .and_then(|s| s.to_str())
             .ok_or_else(|| DomainError::unsupported_file_type("no extension"))?;
@@ -107,13 +144,30 @@ impl FileParserService {
             .ok_or_else(|| DomainError::no_parser_available(extension))?;
 
         // Parse the file
-        let document = parser.parse_local_path(path).await.map_err(|e| {
+        let document = parser.parse_local_path(&canonical).await.map_err(|e| {
             tracing::error!(?e, "FileParserService: parse_local failed");
             e
         })?;
 
         debug!("Successfully parsed file from local path");
         Ok(document)
+    }
+
+    /// Reject paths that contain `..` components (before any file-system call).
+    fn validate_local_path(path: &Path) -> Result<(), DomainError> {
+        for component in path.components() {
+            if matches!(component, std::path::Component::ParentDir) {
+                warn!(
+                    path = %path.display(),
+                    "Path traversal blocked: '..' component detected"
+                );
+                return Err(DomainError::path_traversal_blocked(format!(
+                    "Access denied: path '{}' contains '..' traversal component",
+                    path.display()
+                )));
+            }
+        }
+        Ok(())
     }
 
     /// Parse a file from bytes

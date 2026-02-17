@@ -9,7 +9,7 @@ Converts various document formats into a unified structured representation. Extr
 
 **Input methods:**
 - Upload files directly
-- Parse from local file paths
+- Parse from local file paths (restricted by `allowed_local_base_dir` config; paths with `..` are always rejected)
 
 Full API documentation: <http://127.0.0.1:8087/docs>
 

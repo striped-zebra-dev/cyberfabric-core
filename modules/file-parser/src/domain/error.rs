@@ -22,6 +22,9 @@ pub enum DomainError {
 
     #[error("Invalid request: {message}")]
     InvalidRequest { message: String },
+
+    #[error("Path traversal blocked: {message}")]
+    PathTraversalBlocked { message: String },
 }
 
 impl DomainError {
@@ -55,6 +58,12 @@ impl DomainError {
 
     pub fn invalid_request(message: impl Into<String>) -> Self {
         Self::InvalidRequest {
+            message: message.into(),
+        }
+    }
+
+    pub fn path_traversal_blocked(message: impl Into<String>) -> Self {
+        Self::PathTraversalBlocked {
             message: message.into(),
         }
     }

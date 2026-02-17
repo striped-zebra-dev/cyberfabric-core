@@ -99,6 +99,16 @@ System SHALL convert documents to Markdown format, preserving headings, lists, f
 **Actors**: `fdd-file-parser-actor-api-user`
 <!-- fdd-id-content -->
 
+### Local Path Security
+
+**ID**: [ ] `p1` `fdd-file-parser-fr-local-path-security-v1`
+
+<!-- fdd-id-content -->
+System SHALL reject local file paths containing `..` traversal components. When `allowed_local_base_dir` is configured, system SHALL canonicalize the requested path (resolving symlinks) and reject paths that do not fall under the base directory. Rejected requests SHALL return HTTP 403 and be logged at `warn` level.
+
+**Actors**: `fdd-file-parser-actor-api-user`, `fdd-file-parser-actor-consumer`
+<!-- fdd-id-content -->
+
 ## 5. Non-Functional Requirements
 
 ### Performance
@@ -140,3 +150,4 @@ System SHALL maintain 99.9% uptime SLA.
 |------|---------|--------|---------|
 | 2026-02-09 | 0.1.0 | System | Initial PRD for cypilot validation |
 | 2026-02-17 | 0.2.0 | Security | Removed URL parsing capability (use case `fdd-file-parser-usecase-url-parse-v1`, FR `fdd-file-parser-fr-url-v1`). Rationale: SSRF vulnerability (issue #525) — URL parsing allowed server-side requests to arbitrary endpoints, posing an unacceptable security risk. Decision: remove rather than harden. |
+| 2026-02-17 | 0.3.0 | Security | Added FR `fdd-file-parser-fr-local-path-security-v1` — path-traversal protections for `parse-local` (reject `..`, canonicalize, enforce `allowed_local_base_dir`, block symlink escapes). Rationale: prevent arbitrary file read via path traversal (issue #525). |

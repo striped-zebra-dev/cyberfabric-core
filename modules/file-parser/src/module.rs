@@ -67,10 +67,32 @@ impl Module for FileParserModule {
 
         info!("Registered {} parser backends", parsers.len());
 
+        // Canonicalize the allowed base dir at startup so we only do it once
+        let allowed_local_base_dir = if let Some(ref dir) = cfg.allowed_local_base_dir {
+            let canonical = dir.canonicalize().map_err(|e| {
+                anyhow::anyhow!(
+                    "allowed_local_base_dir '{}' cannot be resolved: {e}",
+                    dir.display()
+                )
+            })?;
+            info!(
+                allowed_local_base_dir = %canonical.display(),
+                "Local file parsing restricted to base directory"
+            );
+            Some(canonical)
+        } else {
+            tracing::warn!(
+                "No allowed_local_base_dir configured -- local file parsing is unrestricted. \
+                 Consider setting this for production deployments."
+            );
+            None
+        };
+
         // Create service config from module config
         let service_config = ServiceConfig {
             max_file_size_bytes: usize::try_from(cfg.max_file_size_mb * BYTES_IN_MB)
                 .unwrap_or(usize::MAX),
+            allowed_local_base_dir,
         };
 
         // Create file parser service
