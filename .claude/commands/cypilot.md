@@ -3,4 +3,4 @@ description: "Template-based artifacts (PRD/DESIGN/ADR/DECOMPOSITION/SPEC) + che
 ---
 
 
-ALWAYS open and follow `../../.cypilot/skills/cypilot/SKILL.md`
+ALWAYS open and follow `@/.cypilot/skills/cypilot/SKILL.md`
