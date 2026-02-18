@@ -417,7 +417,7 @@ We use per-crate versioning, controlled via Cargo manifests and release automati
 
 ModKit is released as a unified framework:
 - Only `cf-modkit` produces changelog entries and GitHub releases.
-- Other `cf-modkit-*` crates are published to crates.io but do not create separate changelog entries/releases. :contentReference[oaicite:2]{index=2}
+- Other `cf-modkit-*` crates are published to crates.io but do not create separate changelog entries/releases.
 
 ## Release Process (Automation)
 
@@ -428,7 +428,7 @@ We use release-plz:
 
 SemVer checks:
 - We aim to run semver checks for published crates.
-- If temporarily disabled (bootstrap or tooling noise), do not use that as an excuse to sneak breaking changes into MINOR/PATCH. :contentReference[oaicite:4]{index=4}
+- If temporarily disabled (bootstrap or tooling noise), do not use that as an excuse to sneak breaking changes into MINOR/PATCH.
 
 ## How to Decide the Version Bump
 
