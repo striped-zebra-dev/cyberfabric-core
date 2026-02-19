@@ -1,6 +1,4 @@
-# How to run them
-
-2 ways
+# Two ways to run the OOP examples
 
 ## ALL IN
 

@@ -3,7 +3,7 @@ use anyhow::Context;
 use std::collections::HashMap;
 use std::io;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tracing_subscriber::{Layer, fmt, util::SubscriberInitExt};
 
@@ -147,19 +147,6 @@ fn extract_config_data(cfg: &LoggingConfig) -> ConfigData<'_> {
 
 // ================= path helpers =================
 
-fn resolve_log_path(file: &str, base_dir: &Path) -> PathBuf {
-    let p = if file.is_empty() {
-        Path::new("all.log")
-    } else {
-        Path::new(file)
-    };
-    if p.is_absolute() {
-        p.to_path_buf()
-    } else {
-        base_dir.join(p)
-    }
-}
-
 fn create_rotating_writer_at_path(
     log_path: &Path,
     max_bytes: usize,
@@ -212,13 +199,8 @@ pub fn init_logging_unified(cfg: &LoggingConfig, base_dir: &Path, otel_layer: Op
     // Build targets once, using a generic builder for different sinks
     let file_router = build_file_router(&data, base_dir);
 
-    let console_targets = build_targets(&data, SinkKind::Console);
-    let file_targets = build_targets(
-        &data,
-        SinkKind::File {
-            has_default_file: file_router.default.is_some(),
-        },
-    );
+    let console_targets = build_target_console(&data);
+    let file_targets = build_target_file(&data, file_router.default.is_some());
 
     install_subscriber(&console_targets, &file_targets, file_router, otel_layer);
 }
@@ -228,71 +210,55 @@ pub fn init_logging_unified(cfg: &LoggingConfig, base_dir: &Path, otel_layer: Op
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::filter::Targets;
 
-/// Different "sinks" (destinations) for which we build Targets.
-/// Only differences: which level field we read, whether the sink is active, and default fallback.
-#[derive(Clone, Copy)]
-enum SinkKind {
-    Console,
-    File { has_default_file: bool },
-}
-
 /// Noisy crates that should be filtered to WARN level to avoid debug spam
 const NOISY_CRATES: &[&str] = &["h2"];
 
-fn build_targets(config: &ConfigData, kind: SinkKind) -> Targets {
-    match kind {
-        SinkKind::Console => {
-            // default level
-            let default_level = config
-                .default_section
-                .and_then(|s| s.console_level)
-                .map_or(LevelFilter::INFO, LevelFilter::from_level);
+fn build_target_console(config: &ConfigData) -> Targets {
+    // default level
+    let default_level = config
+        .default_section
+        .and_then(|s| s.console_level)
+        .map_or(LevelFilter::INFO, LevelFilter::from_level);
 
-            // start with default
-            let mut targets = Targets::new().with_default(default_level);
+    // start with default
+    let mut targets = Targets::new().with_default(default_level);
 
-            // Suppress noisy low-level crates to WARN unless they need DEBUG/TRACE
-            for crate_name in NOISY_CRATES {
-                targets = targets.with_target(*crate_name, LevelFilter::WARN);
-            }
+    // Suppress noisy low-level crates to WARN unless they need DEBUG/TRACE
+    for crate_name in NOISY_CRATES {
+        targets = targets.with_target(*crate_name, LevelFilter::WARN);
+    }
 
-            // per-crate rules (console sink is always "active")
-            for (crate_name, section) in &config.crate_sections {
-                if let Some(level) = section.console_level.map(LevelFilter::from_level) {
-                    targets = targets.with_target(crate_name.clone(), level);
-                }
-            }
-
-            targets
-        }
-
-        SinkKind::File { has_default_file } => {
-            // default level depends on whether there is a default file sink
-            let default_level = config.default_section.and_then(Section::file_level).map_or(
-                if has_default_file {
-                    LevelFilter::INFO
-                } else {
-                    LevelFilter::OFF
-                },
-                LevelFilter::from_level,
-            );
-
-            let mut targets = Targets::new().with_default(default_level);
-
-            // per-crate rules: file sink is "active" only when path is present
-            for (crate_name, section) in &config.crate_sections {
-                if let Some(level) = section
-                    .section_file
-                    .as_ref()
-                    .and_then(|x| x.file_level.map(LevelFilter::from_level))
-                {
-                    targets = targets.with_target(crate_name.clone(), level);
-                }
-            }
-
-            targets
+    // per-crate rules (console sink is always "active")
+    for (crate_name, section) in &config.crate_sections {
+        if let Some(level) = section.console_level.map(LevelFilter::from_level) {
+            targets = targets.with_target(crate_name.clone(), level);
         }
     }
+
+    targets
+}
+
+fn build_target_file(config: &ConfigData, has_default_file: bool) -> Targets {
+    // default level depends on whether there is a default file sink
+    let default_level = if has_default_file {
+        config
+            .default_section
+            .and_then(Section::file_level)
+            .map_or(LevelFilter::INFO, LevelFilter::from_level)
+    } else {
+        LevelFilter::OFF
+    };
+
+    let mut targets = Targets::new().with_default(default_level);
+
+    // per-crate rules: file sink is "active" only when path is present
+    for (crate_name, section) in &config.crate_sections {
+        if let Some(level) = section.file_level().map(LevelFilter::from_level) {
+            targets = targets.with_target(crate_name.clone(), level);
+        }
+    }
+
+    targets
 }
 
 // ================= building routers =================
@@ -300,15 +266,15 @@ fn build_targets(config: &ConfigData, kind: SinkKind) -> Targets {
 fn build_file_router(config: &ConfigData, base_dir: &Path) -> MultiFileRouter {
     let mut router = MultiFileRouter {
         default: None,
-        by_prefix: HashMap::new(),
+        by_prefix: HashMap::with_capacity(config.crate_sections.len()),
     };
 
     if let Some(section) = config.default_section {
-        router.default = create_default_file_writer(section, base_dir);
+        router.default = create_file_writer(None, section, base_dir);
     }
 
     for (crate_name, section) in &config.crate_sections {
-        if let Some(writer) = create_crate_file_writer(crate_name, section, base_dir) {
+        if let Some(writer) = create_file_writer(Some(crate_name), section, base_dir) {
             router.by_prefix.insert(crate_name.clone(), writer);
         }
     }
@@ -332,38 +298,21 @@ impl HasMaxSizeBytes for Section {
 }
 
 #[allow(unknown_lints, de1301_no_print_macros)] // runs during logging init, before tracing is available
-fn create_default_file_writer(section: &Section, base_dir: &Path) -> Option<RotWriter> {
-    let file = section.file()?;
-
-    let max_bytes = section.max_size_bytes();
-    let log_path = resolve_log_path(file, base_dir);
-
-    if let Ok(writer) = create_rotating_writer_at_path(
-        &log_path,
-        max_bytes,
-        section.max_age_days,
-        section.max_backups,
-    ) {
-        Some(writer)
-    } else {
-        eprintln!(
-            "Failed to initialize default log file '{}'",
-            log_path.to_string_lossy()
-        );
-        None
-    }
-}
-
-#[allow(unknown_lints, de1301_no_print_macros)] // runs during logging init, before tracing is available
-fn create_crate_file_writer(
-    crate_name: &str,
+fn create_file_writer(
+    crate_name: Option<&str>,
     section: &Section,
     base_dir: &Path,
 ) -> Option<RotWriter> {
     let file = section.file()?;
 
     let max_bytes = section.max_size_bytes();
-    let log_path = resolve_log_path(file, base_dir);
+
+    let p = Path::new(file);
+    let log_path = if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        base_dir.join(p)
+    };
 
     match create_rotating_writer_at_path(
         &log_path,
@@ -373,12 +322,18 @@ fn create_crate_file_writer(
     ) {
         Ok(writer) => Some(writer),
         Err(e) => {
-            eprintln!(
-                "Failed to init log file for subsystem '{}': {} ({})",
-                crate_name,
-                log_path.to_string_lossy(),
-                e
-            );
+            match crate_name {
+                Some(crate_name) => eprintln!(
+                    "Failed to init log file for subsystem '{}': {} ({})",
+                    crate_name,
+                    log_path.to_string_lossy(),
+                    e,
+                ),
+                None => eprintln!(
+                    "Failed to initialize default log file '{}'",
+                    log_path.to_string_lossy()
+                ),
+            }
             None
         }
     }

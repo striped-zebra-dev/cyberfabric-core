@@ -181,7 +181,7 @@ mod tests {
 
     #[test]
     #[cfg(not(target_os = "windows"))]
-    fn normalize_relative_path_error() {
+    fn normalize_relative_path_resolves_to_absolute() {
         let err = normalize_path("./bin/myapp").unwrap();
         assert!(err.is_absolute());
         assert!(err.ends_with("bin/myapp"));
@@ -189,7 +189,7 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
-    fn windows_normalize_relative_path_error() {
+    fn windows_normalize_relative_path_resolves_to_absolute() {
         let err = normalize_path(".\\bin\\myapp").unwrap();
         assert!(err.is_absolute());
         assert!(err.ends_with("bin\\myapp"));

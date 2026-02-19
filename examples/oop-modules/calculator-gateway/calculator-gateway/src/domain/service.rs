@@ -9,6 +9,7 @@ use calculator_sdk::CalculatorClientV1;
 use modkit::client_hub::ClientHub;
 use modkit_macros::domain_model;
 use modkit_security::SecurityContext;
+use tokio::sync::OnceCell;
 use tracing::{debug, instrument};
 
 /// Error type for Service operations.
@@ -33,12 +34,16 @@ pub enum ServiceError {
 #[domain_model]
 pub struct Service {
     client_hub: Arc<ClientHub>,
+    wired: OnceCell<()>,
 }
 
 impl Service {
     /// Create a new service with ClientHub for dependency resolution.
     pub fn new(client_hub: Arc<ClientHub>) -> Self {
-        Self { client_hub }
+        Self {
+            client_hub,
+            wired: OnceCell::new(),
+        }
     }
 
     /// Add two numbers by delegating to calculator service.
@@ -46,15 +51,13 @@ impl Service {
     pub async fn add(&self, ctx: &SecurityContext, a: i64, b: i64) -> Result<i64, ServiceError> {
         debug!("Resolving calculator client from ClientHub");
 
-        // Try to get cached client, or wire it on first call
-        let calculator = match self.client_hub.get::<dyn CalculatorClientV1>() {
-            Ok(x) => x,
-            Err(_) => {
-                // Why not on init?
-                // there's a timing problem: CalculatorGateway::init() runs during the init phase,
-                // before the OoP child is spawned (which happens after the start phase).
-                // So the LocalDirectoryClient won't have the calculator's endpoint registered yet
-                // when wire_client tries to resolve it.
+        // Ensure wiring happens exactly once, even under concurrent callers.
+        // Why not on init?  CalculatorGateway::init() runs during the init phase,
+        // before the OoP child is spawned (which happens after the start phase).
+        // So the LocalDirectoryClient won't have the calculator's endpoint registered yet
+        // when wire_client tries to resolve it.
+        self.wired
+            .get_or_try_init(|| async {
                 let directory = self
                     .client_hub
                     .get::<dyn modkit::DirectoryClient>()
@@ -65,14 +68,16 @@ impl Service {
                     .await
                     .map_err(|e| {
                         ServiceError::Internal(format!("Failed to wire calculator client: {}", e))
-                    })?;
-                self.client_hub
-                    .get::<dyn CalculatorClientV1>()
-                    .map_err(|e| {
-                        ServiceError::Internal(format!("CalculatorClientV1 not available: {}", e))
-                    })?
-            }
-        };
+                    })
+            })
+            .await?;
+
+        let calculator = self
+            .client_hub
+            .get::<dyn CalculatorClientV1>()
+            .map_err(|e| {
+                ServiceError::Internal(format!("CalculatorClientV1 not available: {}", e))
+            })?;
 
         debug!("Delegating addition to calculator service");
 

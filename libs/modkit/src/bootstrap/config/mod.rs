@@ -215,7 +215,10 @@ pub struct Section {
 impl Section {
     #[must_use]
     pub fn file(&self) -> Option<&str> {
-        self.section_file.as_ref().map(|f| f.file.as_str())
+        self.section_file
+            .as_ref()
+            .map(|f| f.file.as_str())
+            .filter(|s| !s.is_empty())
     }
 
     #[must_use]
@@ -256,8 +259,9 @@ impl AppConfig {
             providers::{Env, Format, Serialized, Yaml},
         };
 
-        // For layered loading, start from a minimal base where optional sections are None,
-        // so they remain None unless explicitly provided by YAML/ENV.
+        // For layered loading, start from AppConfig::default() which provides logging
+        // defaults (via default_logging_config()); other optional sections (database,
+        // tracing, modules_dir) remain None unless overridden by YAML/ENV.
         let figment = Figment::new()
             .merge(Serialized::defaults(AppConfig::default()))
             .merge(Yaml::file(config_path))
