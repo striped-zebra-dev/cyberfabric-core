@@ -9,7 +9,7 @@ name = "oagw"
 path = "src/lib.rs"
 
 [features]
-test-utils = ["axum/ws", "dep:async-stream", "dep:futures", "dep:tower", "tokio/net", "tokio/sync", "tokio/rt"]
+test-utils = ["axum/ws", "dep:async-stream", "dep:futures", "dep:tower", "dep:rustls", "tokio/net", "tokio/sync", "tokio/rt"]
 
 [dependencies]
 cf-oagw-sdk = { path = "../oagw-sdk", features = ["axum"] }
@@ -35,13 +35,19 @@ dashmap = "6.1"
 thiserror = "2.0"
 # DP deps
 form_urlencoded = "1"
-reqwest = { version = "0.12", features = ["stream"] }
 futures-util = "0.3"
-tokio = { version = "1", features = ["time"] }
+tokio = { version = "1", features = ["time", "io-util"] }
+# Pingora proxy engine
+pingora-proxy = { version = "0.7", features = ["rustls"] }
+pingora-core = { version = "0.7", features = ["rustls"] }
+pingora-load-balancing = { version = "0.7", features = ["rustls"] }
+pingora-http = { version = "0.7" }
+httparse = "1"
 # test-utils optional deps
 async-stream = { version = "0.3", optional = true }
 futures = { version = "0.3", optional = true }
 tower = { version = "0.5", features = ["util"], optional = true }
+rustls = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time"] }

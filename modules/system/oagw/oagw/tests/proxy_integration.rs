@@ -1,6 +1,7 @@
 use http::{Method, StatusCode};
 use oagw::test_support::{
-    APIKEY_AUTH_PLUGIN_ID, AppHarness, MockBody, MockGuard, MockResponse, parse_resource_gts,
+    APIKEY_AUTH_PLUGIN_ID, AppHarness, MockBody, MockGuard, MockResponse, MockUpstream,
+    parse_resource_gts,
 };
 use oagw_sdk::Body;
 use oagw_sdk::api::ErrorSource;
@@ -950,6 +951,395 @@ async fn proxy_path_suffix_disabled_rejects_extra_path() {
         )),
         Ok(_) => panic!("expected validation error for disabled path_suffix_mode"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Multi-endpoint load balancing integration tests
+// ---------------------------------------------------------------------------
+
+// positive-2.1 (custom-header-routing), positive-2.10 (upstreams): Round-robin distribution across 2 endpoints.
+#[tokio::test]
+async fn proxy_multi_endpoint_round_robin() {
+    // Start two independent mock servers.
+    let mock_a = MockUpstream::start().await;
+    let mock_b = MockUpstream::start().await;
+
+    let h = AppHarness::builder().build().await;
+    let ctx = h.security_context().clone();
+
+    let upstream = h
+        .facade()
+        .create_upstream(
+            ctx.clone(),
+            CreateUpstreamRequest::builder(
+                Server {
+                    endpoints: vec![
+                        Endpoint {
+                            scheme: Scheme::Http,
+                            host: "127.0.0.1".into(),
+                            port: mock_a.addr().port(),
+                        },
+                        Endpoint {
+                            scheme: Scheme::Http,
+                            host: "127.0.0.1".into(),
+                            port: mock_b.addr().port(),
+                        },
+                    ],
+                },
+                "gts.x.core.oagw.protocol.v1~x.core.oagw.http.v1",
+            )
+            .alias("rr-test")
+            .build(),
+        )
+        .await
+        .unwrap();
+
+    h.facade()
+        .create_route(
+            ctx.clone(),
+            CreateRouteRequest::builder(
+                upstream.id,
+                MatchRules {
+                    http: Some(HttpMatch {
+                        methods: vec![HttpMethod::Get],
+                        path: "/v1/models".into(),
+                        query_allowlist: vec![],
+                        path_suffix_mode: PathSuffixMode::Append,
+                    }),
+                    grpc: None,
+                },
+            )
+            .build(),
+        )
+        .await
+        .unwrap();
+
+    // Send 4 requests — round-robin should distribute across both backends.
+    for _ in 0..4 {
+        let req = http::Request::builder()
+            .method(Method::GET)
+            .uri("/rr-test/v1/models")
+            .body(Body::Empty)
+            .unwrap();
+        let response = h.facade().proxy_request(ctx.clone(), req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    let a_count = mock_a.recorded_requests().await.len();
+    let b_count = mock_b.recorded_requests().await.len();
+    assert!(
+        a_count > 0,
+        "mock_a should have received at least 1 request, got {a_count}"
+    );
+    assert!(
+        b_count > 0,
+        "mock_b should have received at least 1 request, got {b_count}"
+    );
+    assert_eq!(a_count + b_count, 4, "total requests should be 4");
+}
+
+// positive-2.2 (custom-header-routing): X-OAGW-Target-Host explicit selection.
+#[tokio::test]
+async fn proxy_target_host_header_selects_endpoint() {
+    let mock_a = MockUpstream::start().await;
+    let mock_b = MockUpstream::start().await;
+
+    let h = AppHarness::builder().build().await;
+    let ctx = h.security_context().clone();
+
+    let port_a = mock_a.addr().port();
+    let port_b = mock_b.addr().port();
+
+    // Create upstream with 2 endpoints, different ports as distinguishing factor.
+    // Use distinct "hosts" for the X-OAGW-Target-Host selection.
+    // Both resolve to 127.0.0.1 since they're IP addresses.
+    let upstream = h
+        .facade()
+        .create_upstream(
+            ctx.clone(),
+            CreateUpstreamRequest::builder(
+                Server {
+                    endpoints: vec![
+                        Endpoint {
+                            scheme: Scheme::Http,
+                            host: "127.0.0.1".into(),
+                            port: port_a,
+                        },
+                        Endpoint {
+                            scheme: Scheme::Http,
+                            host: "127.0.0.1".into(),
+                            port: port_b,
+                        },
+                    ],
+                },
+                "gts.x.core.oagw.protocol.v1~x.core.oagw.http.v1",
+            )
+            .alias("target-host-test")
+            .build(),
+        )
+        .await
+        .unwrap();
+
+    h.facade()
+        .create_route(
+            ctx.clone(),
+            CreateRouteRequest::builder(
+                upstream.id,
+                MatchRules {
+                    http: Some(HttpMatch {
+                        methods: vec![HttpMethod::Get],
+                        path: "/v1/models".into(),
+                        query_allowlist: vec![],
+                        path_suffix_mode: PathSuffixMode::Append,
+                    }),
+                    grpc: None,
+                },
+            )
+            .build(),
+        )
+        .await
+        .unwrap();
+
+    // Send request with X-OAGW-Target-Host header selecting endpoint host.
+    let req = http::Request::builder()
+        .method(Method::GET)
+        .uri("/target-host-test/v1/models")
+        .header("x-oagw-target-host", "127.0.0.1")
+        .body(Body::Empty)
+        .unwrap();
+    let response = h.facade().proxy_request(ctx.clone(), req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+// negative-2.1 (custom-header-routing): X-OAGW-Target-Host validation — unknown host returns error.
+#[tokio::test]
+async fn proxy_target_host_unknown_returns_error() {
+    let h = AppHarness::builder().build().await;
+    let ctx = h.security_context().clone();
+
+    let upstream = h
+        .facade()
+        .create_upstream(
+            ctx.clone(),
+            CreateUpstreamRequest::builder(
+                Server {
+                    endpoints: vec![Endpoint {
+                        scheme: Scheme::Http,
+                        host: "127.0.0.1".into(),
+                        port: h.mock_port(),
+                    }],
+                },
+                "gts.x.core.oagw.protocol.v1~x.core.oagw.http.v1",
+            )
+            .alias("target-host-unknown")
+            .build(),
+        )
+        .await
+        .unwrap();
+
+    h.facade()
+        .create_route(
+            ctx.clone(),
+            CreateRouteRequest::builder(
+                upstream.id,
+                MatchRules {
+                    http: Some(HttpMatch {
+                        methods: vec![HttpMethod::Get],
+                        path: "/v1/models".into(),
+                        query_allowlist: vec![],
+                        path_suffix_mode: PathSuffixMode::Append,
+                    }),
+                    grpc: None,
+                },
+            )
+            .build(),
+        )
+        .await
+        .unwrap();
+
+    let req = http::Request::builder()
+        .method(Method::GET)
+        .uri("/target-host-unknown/v1/models")
+        .header("x-oagw-target-host", "unknown.com")
+        .body(Body::Empty)
+        .unwrap();
+
+    match h.facade().proxy_request(ctx.clone(), req).await {
+        Err(err) => assert!(
+            matches!(
+                err,
+                oagw_sdk::error::ServiceGatewayError::UnknownTargetHost { .. }
+            ),
+            "expected UnknownTargetHost, got: {err:?}"
+        ),
+        Ok(_) => panic!("expected error for unknown target host"),
+    }
+}
+
+// negative-2.10 (upstreams): All backends unreachable returns connection error (502).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn proxy_all_backends_unreachable() {
+    let h = AppHarness::builder()
+        .with_request_timeout(std::time::Duration::from_secs(5))
+        .build()
+        .await;
+    let ctx = h.security_context().clone();
+
+    // Ports 19991/19992 are unlikely to be listening.
+    let upstream = h
+        .facade()
+        .create_upstream(
+            ctx.clone(),
+            CreateUpstreamRequest::builder(
+                Server {
+                    endpoints: vec![Endpoint {
+                        scheme: Scheme::Http,
+                        host: "127.0.0.1".into(),
+                        port: 19991,
+                    }],
+                },
+                "gts.x.core.oagw.protocol.v1~x.core.oagw.http.v1",
+            )
+            .alias("unreachable-test")
+            .build(),
+        )
+        .await
+        .unwrap();
+
+    h.facade()
+        .create_route(
+            ctx.clone(),
+            CreateRouteRequest::builder(
+                upstream.id,
+                MatchRules {
+                    http: Some(HttpMatch {
+                        methods: vec![HttpMethod::Get],
+                        path: "/v1/models".into(),
+                        query_allowlist: vec![],
+                        path_suffix_mode: PathSuffixMode::Append,
+                    }),
+                    grpc: None,
+                },
+            )
+            .build(),
+        )
+        .await
+        .unwrap();
+
+    let req = http::Request::builder()
+        .method(Method::GET)
+        .uri("/unreachable-test/v1/models")
+        .body(Body::Empty)
+        .unwrap();
+
+    match h.facade().proxy_request(ctx.clone(), req).await {
+        Err(err) => assert!(
+            matches!(
+                err,
+                oagw_sdk::error::ServiceGatewayError::DownstreamError { .. }
+            ),
+            "expected DownstreamError for unreachable backend, got: {err:?}"
+        ),
+        Ok(resp) => {
+            // Pingora may return a 502 response directly via fail_to_proxy.
+            assert!(
+                resp.status() == StatusCode::BAD_GATEWAY
+                    || resp.status() == StatusCode::GATEWAY_TIMEOUT,
+                "expected 502 or 504, got: {}",
+                resp.status()
+            );
+        }
+    }
+}
+
+// positive-2.13 (upstreams): CRUD invalidation — update upstream endpoints, verify new endpoint used.
+#[tokio::test]
+async fn proxy_crud_invalidation_after_update() {
+    let mock_a = MockUpstream::start().await;
+    let mock_b = MockUpstream::start().await;
+    let port_a = mock_a.addr().port();
+    let port_b = mock_b.addr().port();
+
+    let h = AppHarness::builder().build().await;
+    let ctx = h.security_context().clone();
+
+    // Create upstream pointing to mock_a only.
+    let resp = h
+        .api_v1()
+        .post_upstream()
+        .with_body(json!({
+            "server": {
+                "endpoints": [{"host": "127.0.0.1", "port": port_a, "scheme": "http"}]
+            },
+            "protocol": "gts.x.core.oagw.protocol.v1~x.core.oagw.http.v1",
+            "alias": "crud-invalidation",
+            "enabled": true,
+            "tags": []
+        }))
+        .expect_status(201)
+        .await;
+    let upstream_id = resp.json()["id"].as_str().unwrap().to_string();
+    let (_, upstream_uuid) = parse_resource_gts(&upstream_id).unwrap();
+
+    h.api_v1()
+        .post_route()
+        .with_body(json!({
+            "upstream_id": upstream_uuid,
+            "match": {
+                "http": {
+                    "methods": ["GET"],
+                    "path": "/v1/models"
+                }
+            },
+            "enabled": true,
+            "tags": [],
+            "priority": 0
+        }))
+        .expect_status(201)
+        .await;
+
+    // Proxy to mock_a.
+    let req = http::Request::builder()
+        .method(Method::GET)
+        .uri("/crud-invalidation/v1/models")
+        .body(Body::Empty)
+        .unwrap();
+    let response = h.facade().proxy_request(ctx.clone(), req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        mock_a.recorded_requests().await.len(),
+        1,
+        "mock_a should have received 1 request"
+    );
+    assert_eq!(
+        mock_b.recorded_requests().await.len(),
+        0,
+        "mock_b should have received 0 requests"
+    );
+
+    // Update upstream to point to mock_b via REST API (triggers invalidation).
+    h.api_v1()
+        .patch_upstream(&upstream_id)
+        .with_body(json!({
+            "server": {
+                "endpoints": [{"host": "127.0.0.1", "port": port_b, "scheme": "http"}]
+            }
+        }))
+        .expect_status(200)
+        .await;
+
+    // Proxy again — should now go to mock_b (cache was invalidated).
+    let req = http::Request::builder()
+        .method(Method::GET)
+        .uri("/crud-invalidation/v1/models")
+        .body(Body::Empty)
+        .unwrap();
+    let response = h.facade().proxy_request(ctx.clone(), req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        !mock_b.recorded_requests().await.is_empty(),
+        "mock_b should have received at least 1 request after update"
+    );
 }
 
 // Demonstrate MockGuard pattern for custom per-test responses

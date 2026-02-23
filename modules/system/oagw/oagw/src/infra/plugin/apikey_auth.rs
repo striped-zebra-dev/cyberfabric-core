@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use crate::domain::credential::CredentialResolver;
 use crate::domain::plugin::{AuthContext, AuthPlugin, PluginError};
+use async_trait::async_trait;
 use serde::Deserialize;
 
 /// Configuration for the API key auth plugin.
@@ -30,7 +31,7 @@ impl ApiKeyAuthPlugin {
     }
 }
 
-#[async_trait::async_trait]
+#[async_trait]
 impl AuthPlugin for ApiKeyAuthPlugin {
     async fn authenticate(&self, ctx: &mut AuthContext) -> Result<(), PluginError> {
         let config: ApiKeyConfig = serde_json::from_value(

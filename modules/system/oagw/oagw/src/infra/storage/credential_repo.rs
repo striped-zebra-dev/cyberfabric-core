@@ -1,4 +1,5 @@
 use crate::domain::credential::{CredentialError, CredentialResolver, SecretValue};
+use async_trait::async_trait;
 use dashmap::DashMap;
 use modkit_macros::domain_model;
 
@@ -39,7 +40,7 @@ impl Default for InMemoryCredentialResolver {
     }
 }
 
-#[async_trait::async_trait]
+#[async_trait]
 impl CredentialResolver for InMemoryCredentialResolver {
     async fn resolve(&self, secret_ref: &str) -> Result<SecretValue, CredentialError> {
         self.store

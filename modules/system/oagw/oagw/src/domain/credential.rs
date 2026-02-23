@@ -1,3 +1,4 @@
+use async_trait::async_trait;
 use modkit_macros::domain_model;
 
 /// The resolved secret material.
@@ -66,7 +67,7 @@ pub(crate) enum CredentialError {
 }
 
 /// Trait for resolving secret references to their actual values.
-#[async_trait::async_trait]
+#[async_trait]
 pub(crate) trait CredentialResolver: Send + Sync {
     /// Resolve a secret reference (e.g. `cred://openai-key`) to its value.
     ///

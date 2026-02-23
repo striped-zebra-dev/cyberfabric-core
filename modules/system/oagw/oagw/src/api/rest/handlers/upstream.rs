@@ -38,6 +38,7 @@ pub async fn create_upstream(
         .create_upstream(&ctx, req.into())
         .await
         .map_err(|e| domain_error_to_problem(e, "/oagw/v1/upstreams"))?;
+    state.backend_selector.invalidate(upstream.id);
     Ok((StatusCode::CREATED, Json(to_response(upstream))))
 }
 
@@ -84,6 +85,7 @@ pub async fn update_upstream(
         .update_upstream(&ctx, uuid, req.into())
         .await
         .map_err(|e| domain_error_to_problem(e, &instance))?;
+    state.backend_selector.invalidate(upstream.id);
     Ok(Json(to_response(upstream)))
 }
 
@@ -99,5 +101,6 @@ pub async fn delete_upstream(
         .delete_upstream(&ctx, uuid)
         .await
         .map_err(|e| domain_error_to_problem(e, &instance))?;
+    state.backend_selector.invalidate(uuid);
     Ok(StatusCode::NO_CONTENT)
 }

@@ -2,62 +2,71 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::domain::credential::CredentialResolver;
-use crate::domain::error::DomainError;
-use crate::domain::model::{PassthroughMode, PathSuffixMode};
-use crate::domain::plugin::AuthContext;
+use async_trait::async_trait;
+use bytes::Bytes;
 use futures_util::StreamExt;
 use http::{HeaderMap, HeaderName, HeaderValue};
 use modkit_security::SecurityContext;
 use oagw_sdk::api::ErrorSource;
-use oagw_sdk::body::{Body, BodyStream, BoxError};
+use oagw_sdk::body::{Body, BodyStream};
+use pingora_core::apps::HttpServerApp;
+use pingora_proxy::HttpProxy;
+use tokio::io::AsyncWriteExt;
+use tokio::sync::watch;
 
-use crate::domain::services::{ControlPlaneService, DataPlaneService};
-
+use crate::domain::credential::CredentialResolver;
+use crate::domain::error::DomainError;
+use crate::domain::model::{Endpoint, Upstream};
+use crate::domain::model::{PassthroughMode, PathSuffixMode, Scheme};
+use crate::domain::plugin::AuthContext;
 use crate::domain::rate_limit::RateLimiter;
+use crate::domain::services::{ControlPlaneService, DataPlaneService, EndpointSelector};
 use crate::infra::plugin::AuthPluginRegistry;
 
 use super::headers;
+use super::pingora_proxy::{
+    H_ENDPOINT_HOST, H_ENDPOINT_PORT, H_ENDPOINT_SCHEME, H_INSTANCE_URI, H_UPSTREAM_ID,
+    PingoraProxy,
+};
 use super::request_builder;
+use super::session_bridge;
 
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Data Plane service implementation: proxy orchestration and plugin execution.
 pub struct DataPlaneServiceImpl {
     cp: Arc<dyn ControlPlaneService>,
-    http_client: reqwest::Client,
+    backend_selector: Arc<dyn EndpointSelector>,
+    proxy: Arc<HttpProxy<PingoraProxy>>,
+    /// Sender kept alive so receivers see `false` (not shutting down) until drop.
+    _shutdown_tx: watch::Sender<bool>,
+    shutdown_rx: watch::Receiver<bool>,
     auth_registry: AuthPluginRegistry,
     rate_limiter: RateLimiter,
     request_timeout: Duration,
 }
 
 impl DataPlaneServiceImpl {
-    /// # Errors
-    ///
-    /// Returns an error if the HTTP client cannot be built.
     pub fn new(
         cp: Arc<dyn ControlPlaneService>,
         credential_resolver: Arc<dyn CredentialResolver>,
-    ) -> anyhow::Result<Self> {
-        let http_client = reqwest::Client::builder()
-            .connect_timeout(CONNECT_TIMEOUT)
-            // Never follow redirects — upstream could redirect to internal/metadata IPs.
-            .redirect(reqwest::redirect::Policy::none())
-            // No overall timeout — SSE streams run indefinitely.
-            // Request-header timeout is applied via tokio::time::timeout below.
-            .build()?;
-
+        backend_selector: Arc<dyn EndpointSelector>,
+        proxy: Arc<HttpProxy<PingoraProxy>>,
+    ) -> Self {
         let auth_registry = AuthPluginRegistry::with_builtins(credential_resolver);
         let rate_limiter = RateLimiter::new();
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-        Ok(Self {
+        Self {
             cp,
-            http_client,
+            backend_selector,
+            proxy,
+            _shutdown_tx: shutdown_tx,
+            shutdown_rx,
             auth_registry,
             rate_limiter,
             request_timeout: REQUEST_TIMEOUT,
-        })
+        }
     }
 
     /// Override the request timeout.
@@ -66,9 +75,79 @@ impl DataPlaneServiceImpl {
         self.request_timeout = timeout;
         self
     }
+
+    /// Two-tier endpoint selection (D1):
+    /// 1. `X-OAGW-Target-Host` header → validate against endpoint list
+    /// 2. Round-robin via `BackendSelector` for multi-endpoint, direct for single
+    async fn select_endpoint(
+        &self,
+        upstream: &Upstream,
+        req_headers: &http::HeaderMap,
+        instance_uri: &str,
+    ) -> Result<Endpoint, DomainError> {
+        let endpoints = &upstream.server.endpoints;
+
+        if endpoints.is_empty() {
+            return Err(DomainError::DownstreamError {
+                detail: "upstream has no endpoints".into(),
+                instance: instance_uri.to_string(),
+            });
+        }
+
+        // Tier 1: Explicit selection via X-OAGW-Target-Host header.
+        if let Some(target_host) = req_headers
+            .get("x-oagw-target-host")
+            .and_then(|v| v.to_str().ok())
+        {
+            // Validate format: must be a hostname or IP, no port/path/special chars.
+            if target_host.is_empty()
+                || target_host.contains('/')
+                || target_host.contains(':')
+                || target_host.contains('?')
+                || target_host.contains('#')
+                || target_host.contains(' ')
+            {
+                return Err(DomainError::InvalidTargetHost {
+                    instance: instance_uri.to_string(),
+                });
+            }
+
+            // Find matching endpoint by host.
+            return endpoints
+                .iter()
+                .find(|ep| ep.host == target_host)
+                .cloned()
+                .ok_or_else(|| {
+                    let valid_hosts: Vec<&str> =
+                        endpoints.iter().map(|ep| ep.host.as_str()).collect();
+                    DomainError::UnknownTargetHost {
+                        detail: format!(
+                            "X-OAGW-Target-Host '{}' does not match any configured endpoint. Valid hosts: {:?}",
+                            target_host, valid_hosts
+                        ),
+                        instance: instance_uri.to_string(),
+                    }
+                });
+        }
+
+        // Tier 2: Automatic selection.
+        if endpoints.len() == 1 {
+            // Single-endpoint: use directly, no LB overhead.
+            return Ok(endpoints[0].clone());
+        }
+
+        // Multi-endpoint: round-robin via BackendSelector.
+        self.backend_selector
+            .select(upstream.id, endpoints)
+            .await
+            .ok_or_else(|| DomainError::DownstreamError {
+                detail: "all backends are unhealthy".into(),
+                instance: instance_uri.to_string(),
+            })
+    }
 }
 
-#[async_trait::async_trait]
+#[async_trait]
 impl DataPlaneService for DataPlaneServiceImpl {
     async fn proxy_request(
         &self,
@@ -99,18 +178,17 @@ impl DataPlaneService for DataPlaneServiceImpl {
             })
             .unwrap_or_default();
 
+        // Decompose request into parts. Keep body as-is for conditional handling.
         let (parts, body) = req.into_parts();
         let method = parts.method;
         let req_headers = parts.headers;
 
-        // Convert Body to Bytes for the outbound HTTP request.
-        let body_bytes = body
-            .into_bytes()
-            .await
-            .map_err(|e| DomainError::Validation {
-                detail: format!("failed to read request body: {e}"),
-                instance: instance_uri.clone(),
-            })?;
+        // Stage 3: conditional body conversion — keep streams for bidirectional bridge.
+        let (body_bytes, body_stream): (Bytes, Option<BodyStream>) = match body {
+            Body::Empty => (Bytes::new(), None),
+            Body::Bytes(b) => (b, None),
+            Body::Stream(s) => (Bytes::new(), Some(s)),
+        };
 
         // 1. Resolve upstream by alias.
         let upstream = self.cp.resolve_upstream(&ctx, &alias).await?;
@@ -231,15 +309,11 @@ impl DataPlaneService for DataPlaneServiceImpl {
         {
             headers::apply_header_rules(&mut outbound_headers, rules);
         }
-        let endpoint =
-            upstream
-                .server
-                .endpoints
-                .first()
-                .ok_or_else(|| DomainError::DownstreamError {
-                    detail: "upstream has no endpoints".into(),
-                    instance: instance_uri.clone(),
-                })?;
+
+        // 5b. Endpoint selection (D1 — two-tier).
+        let endpoint = self
+            .select_endpoint(&upstream, &req_headers, &instance_uri)
+            .await?;
         headers::set_host_header(&mut outbound_headers, &endpoint.host, endpoint.port);
 
         // 6. Check rate limit (upstream then route).
@@ -262,64 +336,149 @@ impl DataPlaneService for DataPlaneServiceImpl {
             .map_or("/", |h| h.path.as_str());
         let remaining_suffix = path_suffix.strip_prefix(route_path).unwrap_or("");
         let url = request_builder::build_upstream_url(
-            endpoint,
+            &endpoint,
             route_path,
             remaining_suffix,
             &query_params,
         )?;
 
-        // 8. Forward request with timeout on response headers.
-        let send_future = self
-            .http_client
-            .request(method, &url)
-            .headers(outbound_headers)
-            .body(body_bytes)
-            .send();
+        // 7.5. Inject internal context headers for PingoraProxy (D9).
+        let scheme_str = match endpoint.scheme {
+            Scheme::Http => "http",
+            Scheme::Https => "https",
+            Scheme::Wss => "wss",
+            Scheme::Wt => "wt",
+            Scheme::Grpc => "grpc",
+        };
+        if let Ok(v) = HeaderValue::from_str(&upstream.id.to_string()) {
+            outbound_headers.insert(H_UPSTREAM_ID, v);
+        }
+        if let Ok(v) = HeaderValue::from_str(&endpoint.host) {
+            outbound_headers.insert(H_ENDPOINT_HOST, v);
+        }
+        if let Ok(v) = HeaderValue::from_str(&endpoint.port.to_string()) {
+            outbound_headers.insert(H_ENDPOINT_PORT, v);
+        }
+        outbound_headers.insert(H_ENDPOINT_SCHEME, HeaderValue::from_static(scheme_str));
+        if let Ok(v) = HeaderValue::from_str(&instance_uri) {
+            outbound_headers.insert(H_INSTANCE_URI, v);
+        }
 
+        // 8. Bridge request into Pingora via in-memory DuplexStream.
+        let (client_io, server_io) = tokio::io::duplex(65_536);
+
+        // Create Pingora H1 session from the server side of the DuplexStream.
+        // Pingora implements all IO traits for DuplexStream (in ext_io_impl).
+        let session = pingora_core::protocols::http::ServerSession::new_http1(Box::new(server_io));
+
+        // Spawn Pingora proxy processing in background.
+        let proxy = self.proxy.clone();
+        let shutdown = self.shutdown_rx.clone();
+        tokio::spawn(async move {
+            proxy.process_new_http(session, &shutdown).await;
+        });
+
+        // Write the request and read the response from the client side.
         let timeout = self.request_timeout;
-        let response = tokio::time::timeout(timeout, send_future)
-            .await
-            .map_err(|_| DomainError::RequestTimeout {
-                detail: format!("request to {url} timed out after {timeout:?}"),
-                instance: instance_uri.clone(),
-            })?
-            .map_err(|e| {
-                if e.is_connect() {
-                    DomainError::ConnectionTimeout {
-                        detail: e.to_string(),
-                        instance: instance_uri.clone(),
-                    }
-                } else {
-                    DomainError::DownstreamError {
-                        detail: e.to_string(),
-                        instance: instance_uri.clone(),
-                    }
+
+        if let Some(mut body_stream) = body_stream {
+            // Streaming path: write headers, then forward body chunks concurrently.
+            let (client_read, mut client_write) = tokio::io::split(client_io);
+
+            let header_bytes =
+                session_bridge::serialize_request_headers(&method, &url, &outbound_headers);
+            client_write.write_all(&header_bytes).await.map_err(|e| {
+                DomainError::DownstreamError {
+                    detail: format!("failed to write to proxy bridge: {e}"),
+                    instance: instance_uri.clone(),
                 }
             })?;
 
-        // 9. Build streaming response.
-        let status = response.status();
-        let mut resp_headers = response.headers().clone();
-        headers::sanitize_response_headers(&mut resp_headers);
+            // Spawn task to forward body stream chunks, then shutdown.
+            tokio::spawn(async move {
+                while let Some(chunk) = body_stream.next().await {
+                    match chunk {
+                        Ok(bytes) => {
+                            if client_write.write_all(&bytes).await.is_err() {
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            tracing::debug!(error = %e, "body stream chunk error");
+                            break;
+                        }
+                    }
+                }
+                let _ = client_write.shutdown().await;
+            });
 
-        let body_stream: BodyStream = Box::pin(
-            response
-                .bytes_stream()
-                .map(|r| r.map_err(|e| Box::new(e) as BoxError)),
-        );
+            // 9. Parse response from the read half.
+            let (status, mut resp_headers, resp_body_stream) =
+                tokio::time::timeout(timeout, session_bridge::parse_response_stream(client_read))
+                    .await
+                    .map_err(|_| DomainError::RequestTimeout {
+                        detail: format!("request to {url} timed out after {timeout:?}"),
+                        instance: instance_uri.clone(),
+                    })?
+                    .map_err(|e| DomainError::DownstreamError {
+                        detail: format!("proxy bridge error: {e}"),
+                        instance: instance_uri.clone(),
+                    })?;
 
-        let mut resp = http::Response::builder()
-            .status(status)
-            .body(Body::Stream(body_stream))
-            .map_err(|e| DomainError::DownstreamError {
-                detail: format!("failed to build response: {e}"),
-                instance: instance_uri,
-            })?;
+            headers::sanitize_response_headers(&mut resp_headers);
 
-        *resp.headers_mut() = resp_headers;
-        resp.extensions_mut().insert(ErrorSource::Upstream);
+            let mut resp = http::Response::builder()
+                .status(status)
+                .body(Body::Stream(resp_body_stream))
+                .map_err(|e| DomainError::DownstreamError {
+                    detail: format!("failed to build response: {e}"),
+                    instance: instance_uri,
+                })?;
+            *resp.headers_mut() = resp_headers;
+            resp.extensions_mut().insert(ErrorSource::Upstream);
+            Ok(resp)
+        } else {
+            // Buffered path: write full request, shutdown write side, then read response.
+            let wire =
+                session_bridge::serialize_request(&method, &url, &outbound_headers, &body_bytes);
+            let mut client_io = client_io;
+            client_io
+                .write_all(&wire)
+                .await
+                .map_err(|e| DomainError::DownstreamError {
+                    detail: format!("failed to write to proxy bridge: {e}"),
+                    instance: instance_uri.clone(),
+                })?;
+            // Do NOT shutdown the write side — Pingora uses Content-Length to
+            // determine the request boundary, and an early write-close is
+            // misinterpreted as "downstream dropped the connection".
 
-        Ok(resp)
+            // 9. Parse response.
+            let (status, mut resp_headers, resp_body_stream) =
+                tokio::time::timeout(timeout, session_bridge::parse_response_stream(client_io))
+                    .await
+                    .map_err(|_| DomainError::RequestTimeout {
+                        detail: format!("request to {url} timed out after {timeout:?}"),
+                        instance: instance_uri.clone(),
+                    })?
+                    .map_err(|e| DomainError::DownstreamError {
+                        detail: format!("proxy bridge error: {e}"),
+                        instance: instance_uri.clone(),
+                    })?;
+
+            headers::sanitize_response_headers(&mut resp_headers);
+
+            let mut resp = http::Response::builder()
+                .status(status)
+                .body(Body::Stream(resp_body_stream))
+                .map_err(|e| DomainError::DownstreamError {
+                    detail: format!("failed to build response: {e}"),
+                    instance: instance_uri,
+                })?;
+            *resp.headers_mut() = resp_headers;
+            resp.extensions_mut().insert(ErrorSource::Upstream);
+            Ok(resp)
+        }
     }
 }
 
@@ -346,7 +505,11 @@ fn normalize_path(path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_path;
+    use super::*;
+    use crate::domain::model::{Endpoint, Scheme, Server, Upstream};
+    use crate::domain::services::EndpointSelector;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use uuid::Uuid;
 
     #[test]
     fn normalize_collapses_double_slashes() {
@@ -371,5 +534,330 @@ mod tests {
     #[test]
     fn normalize_preserves_clean_path() {
         assert_eq!(normalize_path("/alias/v1/chat"), "/alias/v1/chat");
+    }
+
+    // -----------------------------------------------------------------------
+    // select_endpoint() unit tests
+    // -----------------------------------------------------------------------
+
+    fn ep(host: &str, port: u16) -> Endpoint {
+        Endpoint {
+            scheme: Scheme::Https,
+            host: host.to_string(),
+            port,
+        }
+    }
+
+    fn upstream_with(endpoints: Vec<Endpoint>) -> Upstream {
+        Upstream {
+            id: Uuid::new_v4(),
+            tenant_id: Uuid::new_v4(),
+            alias: "test".to_string(),
+            server: Server { endpoints },
+            protocol: "http".to_string(),
+            enabled: true,
+            auth: None,
+            headers: None,
+            plugins: None,
+            rate_limit: None,
+            tags: vec![],
+        }
+    }
+
+    /// Mock BackendSelector that returns endpoints[call_count % endpoints.len()].
+    struct MockSelector {
+        call_count: AtomicUsize,
+    }
+
+    impl MockSelector {
+        fn new() -> Self {
+            Self {
+                call_count: AtomicUsize::new(0),
+            }
+        }
+
+        fn calls(&self) -> usize {
+            self.call_count.load(Ordering::Relaxed)
+        }
+    }
+
+    #[async_trait]
+    impl EndpointSelector for MockSelector {
+        async fn select(&self, _upstream_id: Uuid, endpoints: &[Endpoint]) -> Option<Endpoint> {
+            let idx = self.call_count.fetch_add(1, Ordering::Relaxed) % endpoints.len();
+            Some(endpoints[idx].clone())
+        }
+
+        fn invalidate(&self, _upstream_id: Uuid) {}
+    }
+
+    /// Build a minimal `DataPlaneServiceImpl` with the given `BackendSelector`.
+    fn build_svc(selector: Arc<dyn EndpointSelector>) -> DataPlaneServiceImpl {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        use crate::domain::credential::{CredentialError, CredentialResolver, SecretValue};
+
+        struct NoopCred;
+        #[async_trait]
+        impl CredentialResolver for NoopCred {
+            async fn resolve(&self, _: &str) -> Result<SecretValue, CredentialError> {
+                unimplemented!()
+            }
+        }
+
+        let cred: Arc<dyn CredentialResolver> = Arc::new(NoopCred);
+
+        // Minimal CP — never called by select_endpoint().
+        use crate::domain::error::DomainError;
+        use crate::domain::model::*;
+        use crate::domain::services::ControlPlaneService;
+        use modkit_security::SecurityContext;
+
+        struct NoopCp;
+        #[async_trait]
+        impl ControlPlaneService for NoopCp {
+            async fn create_upstream(
+                &self,
+                _: &SecurityContext,
+                _: CreateUpstreamRequest,
+            ) -> Result<Upstream, DomainError> {
+                unimplemented!()
+            }
+            async fn get_upstream(
+                &self,
+                _: &SecurityContext,
+                _: Uuid,
+            ) -> Result<Upstream, DomainError> {
+                unimplemented!()
+            }
+            async fn list_upstreams(
+                &self,
+                _: &SecurityContext,
+                _: &ListQuery,
+            ) -> Result<Vec<Upstream>, DomainError> {
+                unimplemented!()
+            }
+            async fn update_upstream(
+                &self,
+                _: &SecurityContext,
+                _: Uuid,
+                _: UpdateUpstreamRequest,
+            ) -> Result<Upstream, DomainError> {
+                unimplemented!()
+            }
+            async fn delete_upstream(
+                &self,
+                _: &SecurityContext,
+                _: Uuid,
+            ) -> Result<(), DomainError> {
+                unimplemented!()
+            }
+            async fn create_route(
+                &self,
+                _: &SecurityContext,
+                _: CreateRouteRequest,
+            ) -> Result<Route, DomainError> {
+                unimplemented!()
+            }
+            async fn get_route(&self, _: &SecurityContext, _: Uuid) -> Result<Route, DomainError> {
+                unimplemented!()
+            }
+            async fn list_routes(
+                &self,
+                _: &SecurityContext,
+                _: Uuid,
+                _: &ListQuery,
+            ) -> Result<Vec<Route>, DomainError> {
+                unimplemented!()
+            }
+            async fn update_route(
+                &self,
+                _: &SecurityContext,
+                _: Uuid,
+                _: UpdateRouteRequest,
+            ) -> Result<Route, DomainError> {
+                unimplemented!()
+            }
+            async fn delete_route(&self, _: &SecurityContext, _: Uuid) -> Result<(), DomainError> {
+                unimplemented!()
+            }
+            async fn resolve_upstream(
+                &self,
+                _: &SecurityContext,
+                _: &str,
+            ) -> Result<Upstream, DomainError> {
+                unimplemented!()
+            }
+            async fn resolve_route(
+                &self,
+                _: &SecurityContext,
+                _: Uuid,
+                _: &str,
+                _: &str,
+            ) -> Result<Route, DomainError> {
+                unimplemented!()
+            }
+        }
+
+        let cp: Arc<dyn ControlPlaneService> = Arc::new(NoopCp);
+        let server_conf = Arc::new(pingora_core::server::configuration::ServerConf::default());
+        let pingora = crate::infra::proxy::pingora_proxy::PingoraProxy::new(
+            Duration::from_secs(10),
+            Duration::from_secs(30),
+        );
+        let proxy = Arc::new(crate::infra::proxy::pingora_proxy::new_http_proxy(
+            &server_conf,
+            pingora,
+        ));
+
+        DataPlaneServiceImpl::new(cp, cred, selector, proxy)
+    }
+
+    // positive-2.2 (custom-header-routing): X-OAGW-Target-Host matches an endpoint.
+    #[tokio::test]
+    async fn select_endpoint_target_host_matches() {
+        let selector = Arc::new(MockSelector::new());
+        let svc = build_svc(selector.clone());
+        let upstream = upstream_with(vec![ep("a.com", 443), ep("b.com", 443)]);
+
+        let mut headers = HeaderMap::new();
+        headers.insert("x-oagw-target-host", "a.com".parse().unwrap());
+
+        let result = svc
+            .select_endpoint(&upstream, &headers, "/test")
+            .await
+            .unwrap();
+        assert_eq!(result.host, "a.com");
+        assert_eq!(selector.calls(), 0, "BackendSelector should not be called");
+    }
+
+    // negative-2.1 (custom-header-routing): X-OAGW-Target-Host does not match any endpoint.
+    #[tokio::test]
+    async fn select_endpoint_target_host_unknown() {
+        let svc = build_svc(Arc::new(MockSelector::new()));
+        let upstream = upstream_with(vec![ep("a.com", 443), ep("b.com", 443)]);
+
+        let mut headers = HeaderMap::new();
+        headers.insert("x-oagw-target-host", "evil.com".parse().unwrap());
+
+        let err = svc
+            .select_endpoint(&upstream, &headers, "/test")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, DomainError::UnknownTargetHost { .. }),
+            "expected UnknownTargetHost, got: {err:?}"
+        );
+    }
+
+    // negative-1.2..1.4 (custom-header-routing): X-OAGW-Target-Host with invalid format.
+    #[tokio::test]
+    async fn select_endpoint_target_host_invalid_format() {
+        let svc = build_svc(Arc::new(MockSelector::new()));
+        let upstream = upstream_with(vec![ep("a.com", 443)]);
+
+        for bad_value in ["a.com:443", "a.com/path", "a.com?q=1", "a b"] {
+            let mut headers = HeaderMap::new();
+            headers.insert("x-oagw-target-host", bad_value.parse().unwrap());
+            let err = svc
+                .select_endpoint(&upstream, &headers, "/test")
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    DomainError::InvalidTargetHost { .. }
+                        | DomainError::UnknownTargetHost { .. }
+                ),
+                "expected InvalidTargetHost or UnknownTargetHost for '{bad_value}', got: {err:?}"
+            );
+        }
+
+        // Empty header value: test separately since HeaderValue::from_static
+        // allows empty strings while .parse() does not.
+        let mut headers = HeaderMap::new();
+        headers.insert("x-oagw-target-host", HeaderValue::from_static(""));
+        let err = svc
+            .select_endpoint(&upstream, &headers, "/test")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, DomainError::InvalidTargetHost { .. }),
+            "expected InvalidTargetHost for empty header, got: {err:?}"
+        );
+    }
+
+    // positive-2.1 (custom-header-routing): Round-robin fallback for multi-endpoint (no header).
+    #[tokio::test]
+    async fn select_endpoint_round_robin_fallback() {
+        let selector = Arc::new(MockSelector::new());
+        let svc = build_svc(selector.clone());
+        let upstream = upstream_with(vec![ep("a.com", 443), ep("b.com", 443)]);
+        let headers = HeaderMap::new();
+
+        let ep1 = svc
+            .select_endpoint(&upstream, &headers, "/test")
+            .await
+            .unwrap();
+        let ep2 = svc
+            .select_endpoint(&upstream, &headers, "/test")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            selector.calls(),
+            2,
+            "BackendSelector should be called for multi-endpoint"
+        );
+        // MockSelector returns endpoints in order: [0], [1], [0], ...
+        assert_eq!(ep1.host, "a.com");
+        assert_eq!(ep2.host, "b.com");
+    }
+
+    // positive-1.1 (custom-header-routing): Single-endpoint bypass (no header, no BackendSelector call).
+    #[tokio::test]
+    async fn select_endpoint_single_endpoint_bypass() {
+        let selector = Arc::new(MockSelector::new());
+        let svc = build_svc(selector.clone());
+        let upstream = upstream_with(vec![ep("only.com", 443)]);
+        let headers = HeaderMap::new();
+
+        let result = svc
+            .select_endpoint(&upstream, &headers, "/test")
+            .await
+            .unwrap();
+        assert_eq!(result.host, "only.com");
+        assert_eq!(
+            selector.calls(),
+            0,
+            "BackendSelector should NOT be called for single endpoint"
+        );
+    }
+
+    // positive-1.2 (custom-header-routing): Single-endpoint upstream validates header if present.
+    #[tokio::test]
+    async fn select_endpoint_single_endpoint_validates_header() {
+        let svc = build_svc(Arc::new(MockSelector::new()));
+        let upstream = upstream_with(vec![ep("a.com", 443)]);
+
+        // Valid header matching the single endpoint → OK.
+        let mut headers = HeaderMap::new();
+        headers.insert("x-oagw-target-host", "a.com".parse().unwrap());
+        let result = svc
+            .select_endpoint(&upstream, &headers, "/test")
+            .await
+            .unwrap();
+        assert_eq!(result.host, "a.com");
+
+        // Invalid header not matching → UnknownTargetHost.
+        let mut headers = HeaderMap::new();
+        headers.insert("x-oagw-target-host", "b.com".parse().unwrap());
+        let err = svc
+            .select_endpoint(&upstream, &headers, "/test")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, DomainError::UnknownTargetHost { .. }),
+            "expected UnknownTargetHost for mismatched header on single-endpoint upstream"
+        );
     }
 }

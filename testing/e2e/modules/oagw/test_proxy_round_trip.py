@@ -70,7 +70,12 @@ async def test_get_proxy_returns_upstream_response(
 async def test_hop_by_hop_headers_stripped(
     oagw_base_url, oagw_headers, mock_upstream_url, mock_upstream,
 ):
-    """Hop-by-hop headers are not forwarded to the upstream."""
+    """Hop-by-hop headers from the client are not forwarded to the upstream.
+
+    The proxy itself may set its own Connection header (e.g. ``close`` on
+    HTTP/1.1) — that is acceptable.  What matters is that the *client's*
+    hop-by-hop values are stripped.
+    """
     _ = mock_upstream
     alias = unique_alias("proxy-hop")
     async with httpx.AsyncClient(timeout=10.0) as client:
@@ -94,12 +99,20 @@ async def test_hop_by_hop_headers_stripped(
         assert resp.status_code == 200
         echoed_headers = resp.json().get("headers", {})
 
-        hop_by_hop = [
-            "connection", "keep-alive", "proxy-authorization",
+        # These hop-by-hop headers must never reach the upstream.
+        must_strip = [
+            "keep-alive", "proxy-authorization",
             "te", "trailer", "transfer-encoding", "upgrade",
         ]
-        for h in hop_by_hop:
+        for h in must_strip:
             assert h not in echoed_headers, f"Hop-by-hop header '{h}' was forwarded to upstream"
+
+        # The proxy may set its own Connection header (e.g. "close" on
+        # HTTP/1.1), but the client's value ("keep-alive") must not appear.
+        conn = echoed_headers.get("connection", "")
+        assert "keep-alive" not in conn.lower(), (
+            f"Client's 'Connection: keep-alive' was forwarded; got '{conn}'"
+        )
 
         await delete_upstream(client, oagw_base_url, oagw_headers, uid)
 

@@ -7,6 +7,8 @@ use crate::domain::model::{
     UpdateUpstreamRequest, Upstream,
 };
 use crate::domain::repo::{RouteRepository, UpstreamRepository};
+
+use async_trait::async_trait;
 use modkit_macros::domain_model;
 use modkit_security::SecurityContext;
 use uuid::Uuid;
@@ -63,7 +65,7 @@ fn generate_alias(upstream: &Upstream) -> String {
     endpoints[0].alias_contribution()
 }
 
-#[async_trait::async_trait]
+#[async_trait]
 impl ControlPlaneService for ControlPlaneServiceImpl {
     // -- Upstream CRUD --
 

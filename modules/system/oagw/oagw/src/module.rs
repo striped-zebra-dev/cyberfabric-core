@@ -17,7 +17,8 @@ use types_registry_sdk::{RegisterResult, RegisterSummary, TypesRegistryClient};
 
 use crate::api::rest::routes;
 use crate::domain::services::{
-    ControlPlaneService, ControlPlaneServiceImpl, DataPlaneService, ServiceGatewayClientV1Facade,
+    ControlPlaneService, ControlPlaneServiceImpl, DataPlaneService, EndpointSelector,
+    ServiceGatewayClientV1Facade,
 };
 use crate::infra::proxy::DataPlaneServiceImpl;
 use crate::infra::storage::{InMemoryCredentialResolver, InMemoryRouteRepo, InMemoryUpstreamRepo};
@@ -27,6 +28,7 @@ use crate::infra::storage::{InMemoryCredentialResolver, InMemoryRouteRepo, InMem
 pub struct AppState {
     pub(crate) cp: Arc<dyn ControlPlaneService>,
     pub(crate) dp: Arc<dyn DataPlaneService>,
+    pub(crate) backend_selector: Arc<dyn EndpointSelector>,
     pub(crate) config: crate::config::RuntimeConfig,
 }
 
@@ -76,9 +78,24 @@ impl Module for OutboundApiGatewayModule {
         ctx.client_hub()
             .register::<dyn CredentialResolver>(cred_resolver.clone());
 
-        // -- Data Plane init --
+        // -- Data Plane init (Pingora proxy engine) --
+        let server_conf = Arc::new(pingora_core::server::configuration::ServerConf {
+            upstream_keepalive_pool_size: 128,
+            ..Default::default()
+        });
+        let connect_timeout = Duration::from_secs(10);
+        let read_timeout = Duration::from_secs(cfg.proxy_timeout_secs);
+        let pingora_proxy =
+            crate::infra::proxy::pingora_proxy::PingoraProxy::new(connect_timeout, read_timeout);
+        let proxy = Arc::new(crate::infra::proxy::pingora_proxy::new_http_proxy(
+            &server_conf,
+            pingora_proxy,
+        ));
+        let backend_selector: Arc<dyn EndpointSelector> =
+            Arc::new(crate::infra::proxy::pingora_proxy::PingoraEndpointSelector::new());
+
         let dp: Arc<dyn DataPlaneService> = Arc::new(
-            DataPlaneServiceImpl::new(cp.clone(), cred_resolver)?
+            DataPlaneServiceImpl::new(cp.clone(), cred_resolver, backend_selector.clone(), proxy)
                 .with_request_timeout(Duration::from_secs(cfg.proxy_timeout_secs)),
         );
 
@@ -123,6 +140,7 @@ impl Module for OutboundApiGatewayModule {
         let app_state = AppState {
             cp,
             dp,
+            backend_selector,
             config: (&cfg).into(),
         };
 

@@ -8,7 +8,8 @@ use modkit::client_hub::ClientHub;
 use oagw_sdk::api::ServiceGatewayClientV1;
 
 use crate::domain::services::{
-    ControlPlaneService, ControlPlaneServiceImpl, DataPlaneService, ServiceGatewayClientV1Facade,
+    ControlPlaneService, ControlPlaneServiceImpl, DataPlaneService, EndpointSelector,
+    ServiceGatewayClientV1Facade,
 };
 use crate::infra::proxy::DataPlaneServiceImpl;
 use crate::infra::storage::{InMemoryCredentialResolver, InMemoryRouteRepo, InMemoryUpstreamRepo};
@@ -97,8 +98,21 @@ impl TestDpBuilder {
             .get::<dyn CredentialResolver>()
             .expect("CredentialResolver must be registered before building DP");
 
-        let mut svc = DataPlaneServiceImpl::new(cp, cred_resolver)
-            .expect("failed to build DataPlaneServiceImpl in test");
+        let server_conf =
+            std::sync::Arc::new(pingora_core::server::configuration::ServerConf::default());
+        let pingora_proxy = crate::infra::proxy::pingora_proxy::PingoraProxy::new(
+            std::time::Duration::from_secs(10),
+            std::time::Duration::from_secs(30),
+        );
+        let proxy = std::sync::Arc::new(crate::infra::proxy::pingora_proxy::new_http_proxy(
+            &server_conf,
+            pingora_proxy,
+        ));
+
+        let backend_selector: Arc<dyn EndpointSelector> =
+            Arc::new(crate::infra::proxy::pingora_proxy::PingoraEndpointSelector::new());
+
+        let mut svc = DataPlaneServiceImpl::new(cp, cred_resolver, backend_selector, proxy);
         if let Some(timeout) = self.request_timeout {
             svc = svc.with_request_timeout(timeout);
         }
@@ -132,6 +146,8 @@ pub fn build_test_app_state(
 ) -> TestAppState {
     let cp = cp_builder.build_and_register(hub);
     let dp = dp_builder.build_and_register(hub, cp.clone());
+    let backend_selector: Arc<dyn EndpointSelector> =
+        Arc::new(crate::infra::proxy::pingora_proxy::PingoraEndpointSelector::new());
     let facade: Arc<dyn ServiceGatewayClientV1> =
         Arc::new(ServiceGatewayClientV1Facade::new(cp.clone(), dp.clone()));
     hub.register::<dyn ServiceGatewayClientV1>(facade.clone());
@@ -139,6 +155,7 @@ pub fn build_test_app_state(
         state: crate::module::AppState {
             cp,
             dp,
+            backend_selector,
             config: crate::config::RuntimeConfig {
                 max_body_size_bytes: 100 * 1024 * 1024, // 100 MB default for tests
             },

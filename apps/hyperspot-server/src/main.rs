@@ -65,6 +65,13 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Install the default TLS crypto provider (aws-lc-rs) before any module
+    // touches rustls. Required because both aws-lc-rs (via sqlx) and ring
+    // (via pingora-rustls) are in the dep tree, preventing auto-detection.
+    if rustls::crypto::CryptoProvider::get_default().is_none() {
+        drop(rustls::crypto::aws_lc_rs::default_provider().install_default());
+    }
+
     let cli = Cli::parse();
 
     // Layered config:

@@ -67,6 +67,13 @@ impl AppHarnessBuilder {
     }
 
     pub async fn build(self) -> AppHarness {
+        // When `cargo test --workspace` unifies features, rustls may end up
+        // with both `aws-lc-rs` and `ring` enabled, preventing auto-detection.
+        // Explicitly install the provider once (skip if already set).
+        if rustls::crypto::CryptoProvider::get_default().is_none() {
+            drop(rustls::crypto::aws_lc_rs::default_provider().install_default());
+        }
+
         let hub = ClientHub::new();
 
         let mut cp_builder = TestCpBuilder::new();

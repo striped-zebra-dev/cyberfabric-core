@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use async_trait::async_trait;
 use modkit_macros::domain_model;
 
 // ---------------------------------------------------------------------------
@@ -31,7 +32,7 @@ pub struct AuthContext {
     pub config: HashMap<String, String>,
 }
 
-#[async_trait::async_trait]
+#[async_trait]
 pub trait AuthPlugin: Send + Sync {
     async fn authenticate(&self, ctx: &mut AuthContext) -> Result<(), PluginError>;
 }
