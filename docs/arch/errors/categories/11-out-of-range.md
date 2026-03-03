@@ -11,7 +11,7 @@
 
 ## Context Schema
 
-GTS schema ID: `gts://gts.cf.core.errors.validation.v1~`
+GTS schema ID: `gts.cf.core.errors.validation.v1~`
 
 **Variant: FieldViolations**
 
@@ -20,13 +20,15 @@ GTS schema ID: `gts://gts.cf.core.errors.validation.v1~`
 | `field_violations` | `Vec<FieldViolation>` | List of per-field out-of-range errors |
 | `details` | `Option<Object>` | Reserved for derived GTS type extensions (p3+); absent in p1 |
 
-Each `FieldViolation` (GTS schema ID: `gts://gts.cf.core.errors.field_violation.v1~`):
+Each `FieldViolation` (GTS schema ID: `gts.cf.core.errors.field_violation.v1~`):
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `field` | `String` | Field path (e.g., `"page"`, `"quantity"`) |
 | `description` | `String` | Human-readable explanation |
 | `reason` | `String` | Machine-readable reason code (e.g., `OUT_OF_RANGE`) |
+
+**Variant: Format** — `{ "format": "<message>", "details": null }`
 
 **Variant: Constraint** — `{ "constraint": "<message>", "details": null }`
 

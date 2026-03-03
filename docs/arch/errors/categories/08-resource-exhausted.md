@@ -11,14 +11,14 @@
 
 ## Context Schema
 
-GTS schema ID: `gts://gts.cf.core.errors.quota_failure.v1~`
+GTS schema ID: `gts.cf.core.errors.quota_failure.v1~`
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `violations` | `Vec<QuotaViolation>` | List of quota violations |
 | `details` | `Option<Object>` | Reserved for derived GTS type extensions (p3+); absent in p1 |
 
-Each `QuotaViolation` (GTS schema ID: `gts://gts.cf.core.errors.quota_violation.v1~`):
+Each `QuotaViolation` (GTS schema ID: `gts.cf.core.errors.quota_violation.v1~`):
 
 | Field | Type | Description |
 |-------|------|-------------|

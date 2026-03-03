@@ -11,7 +11,7 @@
 
 ## Context Schema
 
-GTS schema ID: `gts://gts.cf.core.errors.validation.v1~`
+GTS schema ID: `gts.cf.core.errors.validation.v1~`
 
 **Variant: FieldViolations**
 
@@ -20,7 +20,7 @@ GTS schema ID: `gts://gts.cf.core.errors.validation.v1~`
 | `field_violations` | `Vec<FieldViolation>` | List of per-field validation errors |
 | `details` | `Option<Object>` | Reserved for derived GTS type extensions (p3+); absent in p1 |
 
-Each `FieldViolation` (GTS schema ID: `gts://gts.cf.core.errors.field_violation.v1~`):
+Each `FieldViolation` (GTS schema ID: `gts.cf.core.errors.field_violation.v1~`):
 
 | Field | Type | Description |
 |-------|------|-------------|

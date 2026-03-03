@@ -115,6 +115,12 @@ For each module:
 - [ ] 3.2.4 AuthZ Resolver (`modules/core/authz-resolver/`)
 - [ ] 3.2.5 AuthN Resolver (`modules/core/authn-resolver/`)
 - [ ] 3.2.6 Simple Resource Registry (`modules/simple-resource-registry/`)
+- [ ] 3.2.7 Simple User Settings (`modules/simple-user-settings/`)
+- [ ] 3.2.8 API Gateway (`modules/system/api-gateway/`)
+- [ ] 3.2.9 Nodes Registry (`modules/system/nodes-registry/`)
+- [ ] 3.2.10 Types Registry (`modules/system/types-registry/`)
+- [ ] 3.2.11 File Parser (`modules/file-parser/`)
+- [ ] 3.2.12 Mini-Chat (`modules/mini-chat/`)
 
 ---
 

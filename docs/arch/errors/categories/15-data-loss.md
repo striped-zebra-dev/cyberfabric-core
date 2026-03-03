@@ -11,7 +11,7 @@
 
 ## Context Schema
 
-GTS schema ID: `gts://gts.cf.core.errors.resource_info.v1~`
+GTS schema ID: `gts.cf.core.errors.resource_info.v1~`
 
 | Field | Type | Description |
 |-------|------|-------------|

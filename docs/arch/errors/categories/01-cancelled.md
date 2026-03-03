@@ -11,7 +11,7 @@
 
 ## Context Schema
 
-GTS schema ID: `gts://gts.cf.core.errors.request_info.v1~`
+GTS schema ID: `gts.cf.core.errors.request_info.v1~`
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -34,7 +34,11 @@ use cf_modkit_errors::{CanonicalError, RequestInfo};
 let err = CanonicalError::cancelled(
     RequestInfo { request_id: "01JREQ-DEF".to_string() }
 );
-// Returns error with default message, no resource_type, no debug_info
+// CanonicalError::cancelled uses RequestInfo as its context type.
+// resource_type and debug_info are optional; the minimal constructor sets both to None.
+// When resource_type is set via .with_resource_type("gts.cf..."), it is injected into
+// the wire context object during Problem mapping. The JSON example below shows an
+// optional resource_type present in context.
 ```
 
 ## JSON Wire — JSON Schema

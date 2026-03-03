@@ -11,14 +11,14 @@
 
 ## Context Schema
 
-GTS schema ID: `gts://gts.cf.core.errors.precondition_failure.v1~`
+GTS schema ID: `gts.cf.core.errors.precondition_failure.v1~`
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `violations` | `Vec<PreconditionViolation>` | List of precondition violations |
 | `details` | `Option<Object>` | Reserved for derived GTS type extensions (p3+); absent in p1 |
 
-Each `PreconditionViolation` (GTS schema ID: `gts://gts.cf.core.errors.precondition_violation.v1~`):
+Each `PreconditionViolation` (GTS schema ID: `gts.cf.core.errors.precondition_violation.v1~`):
 
 | Field | Type | Description |
 |-------|------|-------------|

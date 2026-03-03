@@ -205,7 +205,7 @@ All REST error responses use `Content-Type: application/problem+json` and includ
 
 Error category GTS identifiers use the compound GTS type format:
 
-```
+```text
 gts.cf.core.errors.err.v1~cf.core.err.{category}.v1~
 ```
 
@@ -681,6 +681,9 @@ use axum::http::Uri;
 
 // In error middleware layer:
 async fn handle_error(err: CanonicalError, uri: &Uri, trace_id: Option<String>) -> Problem {
+    // Extract debug_info before moving err into Problem::from_error()
+    let debug_info = err.debug_info().cloned();
+
     let mut problem = Problem::from_error(err);  // or from_error_debug() in debug mode
 
     // Inject trace_id from span or request headers
@@ -695,7 +698,7 @@ async fn handle_error(err: CanonicalError, uri: &Uri, trace_id: Option<String>) 
     problem.instance = Some(uri.path().to_string());
 
     // Log debug_info if present (production mode omits it from response)
-    if let Some(debug) = err.debug_info() {
+    if let Some(debug) = debug_info {
         tracing::error!(
             trace_id = ?problem.trace_id,
             detail = %debug.detail,

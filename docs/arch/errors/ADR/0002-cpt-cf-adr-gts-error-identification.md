@@ -79,7 +79,7 @@ Use URN format: `urn:cyberfabric:error:not_found:v1`
 
 GTS identifier format for error categories:
 
-```
+```text
 gts.cf.core.errors.err.v1~cf.core.err.{category}.v1~
 └────── base type ──────┘ └───── instance type ────┘
 ```

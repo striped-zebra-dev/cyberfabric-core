@@ -11,14 +11,17 @@
 
 ## Context Schema
 
-GTS schema ID: `gts://gts.cf.core.errors.error_info.v1~`
+GTS schema ID: `gts.cf.core.errors.error_info.v1~`
 
 | Field | Type | Description |
 |-------|------|-------------|
+| `resource_type` | `Option<String>` | Transport-injected resource GTS type identifier when provided by the canonical error wrapper |
 | `reason` | `String` | Machine-readable reason code (e.g., `CROSS_TENANT_ACCESS`, `SCOPE_INSUFFICIENT`) |
 | `domain` | `String` | Logical grouping (e.g., `"auth.cyberfabric.io"`) |
 | `metadata` | `HashMap<String, String>` | Arbitrary key-value pairs for additional context |
 | `details` | `Option<Object>` | Reserved for derived GTS type extensions (p3+); absent in p1 |
+
+> Note: In Rust, `resource_type` is carried on `CanonicalError::PermissionDenied` as an envelope field, not inside `ErrorInfo`. It is injected into the wire `context` object during mapping to `Problem` via `Problem::from_error`. It is not part of the `ErrorInfo` GTS type (`gts.cf.core.errors.error_info.v1~`).
 
 ## Rust Definitions and Constructor Example
 

@@ -11,13 +11,15 @@
 
 ## Context Schema
 
-GTS schema ID: `gts://gts.cf.core.errors.debug_info.v1~`
+GTS schema ID: `gts.cf.core.errors.debug_info.v1~`
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `detail` | `String` | Human-readable debug message (generic in production) |
 | `stack_entries` | `Vec<String>` | Stack trace entries (empty in production) |
 | `details` | `Option<Object>` | Reserved for derived GTS type extensions (p3+); absent in p1 |
+
+> Note: `resource_type` is not part of the `DebugInfo` GTS type (`gts.cf.core.errors.debug_info.v1~`). It is an optional envelope field on `CanonicalError::Internal` and is injected alongside `detail` and `stack_entries` into the wire `context` object during mapping to `Problem` via `Problem::from_error`.
 
 ## Rust Definitions and Constructor Example
 
