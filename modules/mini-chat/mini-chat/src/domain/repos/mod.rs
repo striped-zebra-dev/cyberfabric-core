@@ -2,7 +2,7 @@ mod attachment_repo;
 mod chat_repo;
 mod message_repo;
 mod model_pref_repo;
-mod model_resolver;
+pub(crate) mod model_resolver;
 mod outbox_enqueuer;
 mod policy_snapshot_provider;
 mod quota_usage_repo;

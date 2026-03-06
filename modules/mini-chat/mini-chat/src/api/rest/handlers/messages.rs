@@ -56,17 +56,40 @@ pub(crate) async fn stream_message(
         .into_response();
     }
 
+    // ── Resolve model + provider from chat ─────────────────────────────
+    let chat = match svc.chats.get_chat(&ctx, chat_id).await {
+        Ok(c) => c,
+        Err(e) => {
+            let status = if e.to_string().contains("not found") {
+                StatusCode::NOT_FOUND
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            return Problem::new(status, "Error", e.to_string()).into_response();
+        }
+    };
+
+    let resolved = match svc
+        .models
+        .resolve_model(ctx.subject_id(), Some(chat.model))
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            return Problem::new(StatusCode::BAD_REQUEST, "Bad Request", e.to_string())
+                .into_response();
+        }
+    };
+
     // ── Wire up streaming pipeline ─────────────────────────────────────
     let capacity = svc.stream.channel_capacity();
     let ping_secs = svc.stream.ping_interval_secs();
     let (tx, rx) = mpsc::channel::<StreamEvent>(capacity);
     let cancel = CancellationToken::new();
 
-    // TODO: model should come from user preferences / quota decision
-    let model = "gpt-4o".to_owned();
     let request_id = body.request_id.unwrap_or_else(uuid::Uuid::new_v4);
 
-    info!(chat_id = %chat_id, %request_id, model = %model, "starting SSE stream");
+    info!(chat_id = %chat_id, %request_id, model = %resolved.model_id, provider_id = %resolved.provider_id, "starting SSE stream");
 
     // Pre-stream checks + spawn the provider task
     let provider_handle = match svc
@@ -76,7 +99,7 @@ pub(crate) async fn stream_message(
             chat_id,
             request_id,
             body.content,
-            model,
+            resolved,
             cancel.clone(),
             tx,
         )

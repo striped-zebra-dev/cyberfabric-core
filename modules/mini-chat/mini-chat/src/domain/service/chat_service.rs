@@ -70,10 +70,11 @@ impl<CR: ChatRepository + 'static> ChatService<CR> {
             )
             .await?;
 
-        let model = self
+        let resolved = self
             .model_resolver
             .resolve_model(ctx.subject_id(), new.model)
             .await?;
+        let model = resolved.model_id;
 
         let now = OffsetDateTime::now_utc();
         let id = Uuid::now_v7();

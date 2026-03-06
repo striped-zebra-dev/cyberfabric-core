@@ -12,6 +12,7 @@ use uuid::Uuid;
 use mini_chat_sdk::UserLimits;
 
 use crate::domain::error::DomainError;
+use crate::domain::repos::model_resolver::ResolvedModel;
 use crate::domain::repos::{ModelResolver, PolicySnapshotProvider, UserLimitsProvider};
 
 /// Resolves model IDs by querying the policy plugin discovered via GTS.
@@ -77,7 +78,7 @@ impl ModelResolver for ModelPolicyGateway {
         &self,
         user_id: Uuid,
         model: Option<String>,
-    ) -> Result<String, DomainError> {
+    ) -> Result<ResolvedModel, DomainError> {
         let plugin = self.get_policy_plugin().await?;
         let version_info = plugin
             .get_current_policy_version(user_id)
@@ -98,7 +99,10 @@ impl ModelResolver for ModelPolicyGateway {
                     .or_else(|| snapshot.model_catalog.iter().find(|m| m.global_enabled));
 
                 match default {
-                    Some(entry) => Ok(entry.model_id.clone()),
+                    Some(entry) => Ok(ResolvedModel {
+                        model_id: entry.model_id.clone(),
+                        provider_id: entry.provider_id.clone(),
+                    }),
                     None => Err(DomainError::invalid_model("no models available in catalog")),
                 }
             }
@@ -107,15 +111,17 @@ impl ModelResolver for ModelPolicyGateway {
             }
             Some(model) => {
                 // Validate provided model exists in catalog
-                let found = snapshot
+                let entry = snapshot
                     .model_catalog
                     .iter()
-                    .any(|m| m.model_id == model && m.global_enabled);
+                    .find(|m| m.model_id == model && m.global_enabled);
 
-                if found {
-                    Ok(model)
-                } else {
-                    Err(DomainError::invalid_model(&model))
+                match entry {
+                    Some(e) => Ok(ResolvedModel {
+                        model_id: e.model_id.clone(),
+                        provider_id: e.provider_id.clone(),
+                    }),
+                    None => Err(DomainError::invalid_model(&model)),
                 }
             }
         }

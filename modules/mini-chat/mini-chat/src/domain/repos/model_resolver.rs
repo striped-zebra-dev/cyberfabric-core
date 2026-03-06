@@ -1,7 +1,17 @@
 use async_trait::async_trait;
 use uuid::Uuid;
 
+use modkit_macros::domain_model;
+
 use crate::domain::error::DomainError;
+
+/// Result of model resolution — model ID plus routing metadata.
+#[domain_model]
+pub struct ResolvedModel {
+    pub model_id: String,
+    /// Maps to a key in `MiniChatConfig.providers` (e.g. `"openai"`, `"azure_openai"`).
+    pub provider_id: String,
+}
 
 /// Resolves and validates model IDs against the user's policy catalog.
 ///
@@ -18,5 +28,5 @@ pub trait ModelResolver: Send + Sync {
         &self,
         user_id: Uuid,
         model: Option<String>,
-    ) -> Result<String, DomainError>;
+    ) -> Result<ResolvedModel, DomainError>;
 }

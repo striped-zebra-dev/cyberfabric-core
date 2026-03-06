@@ -724,6 +724,7 @@ mod tests {
             description: String::new(),
             provider_display_name: String::new(),
             multiplier_display: "1x".to_owned(),
+            provider_id: "openai".to_owned(),
         }
     }
 

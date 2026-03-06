@@ -14,6 +14,7 @@ use sea_orm_migration::MigratorTrait;
 use uuid::Uuid;
 
 use crate::domain::error::DomainError;
+use crate::domain::repos::model_resolver::ResolvedModel;
 use crate::domain::repos::{
     ModelResolver, PolicySnapshotProvider, ThreadSummaryRepository, UserLimitsProvider,
 };
@@ -123,15 +124,23 @@ impl ModelResolver for MockModelResolver {
         &self,
         _user_id: Uuid,
         model: Option<String>,
-    ) -> Result<String, DomainError> {
-        let catalog = [("gpt-5.2", true), ("gpt-5-mini", false)];
+    ) -> Result<ResolvedModel, DomainError> {
+        let catalog = [("gpt-5.2", "openai", true), ("gpt-5-mini", "openai", false)];
 
         match model {
-            None => Ok("gpt-5.2".to_owned()),
+            None => Ok(ResolvedModel {
+                model_id: "gpt-5.2".to_owned(),
+                provider_id: "openai".to_owned(),
+            }),
             Some(m) if m.is_empty() => Err(DomainError::invalid_model("model must not be empty")),
             Some(m) => {
-                if catalog.iter().any(|(id, enabled)| *id == m && *enabled) {
-                    Ok(m)
+                if let Some((_, provider_id, _)) =
+                    catalog.iter().find(|(id, _, enabled)| *id == m && *enabled)
+                {
+                    Ok(ResolvedModel {
+                        model_id: m,
+                        provider_id: provider_id.to_string(),
+                    })
                 } else {
                     Err(DomainError::invalid_model(&m))
                 }

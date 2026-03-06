@@ -12,7 +12,7 @@ use crate::domain::repos::{
     TurnRepository, UserLimitsProvider, VectorStoreRepository,
 };
 use crate::domain::service::quota_settler::QuotaSettler;
-use crate::infra::llm::LlmProvider;
+use crate::infra::llm::provider_resolver::ProviderResolver;
 
 mod attachment_service;
 mod chat_service;
@@ -135,8 +135,8 @@ impl<
         repos: &Repositories<TR, MR, QR, RR, CR>,
         db: Arc<DbProvider>,
         authz: Arc<dyn AuthZResolverClient>,
-        model_resolver: Arc<dyn ModelResolver>,
-        llm: Arc<dyn LlmProvider>,
+        model_resolver: &Arc<dyn ModelResolver>,
+        provider_resolver: Arc<ProviderResolver>,
         streaming_config: StreamingConfig,
         policy_provider: Arc<dyn PolicySnapshotProvider>,
         limits_provider: Arc<dyn UserLimitsProvider>,
@@ -170,7 +170,7 @@ impl<
                 Arc::clone(&repos.chat),
                 Arc::clone(&repos.thread_summary),
                 enforcer.clone(),
-                model_resolver,
+                Arc::clone(model_resolver),
             ),
             messages: MessageService::new(
                 Arc::clone(&db),
@@ -184,7 +184,7 @@ impl<
                 Arc::clone(&repos.message),
                 Arc::clone(&repos.chat),
                 enforcer.clone(),
-                llm,
+                provider_resolver,
                 streaming_config,
                 Arc::clone(&finalization),
             ),
@@ -202,7 +202,12 @@ impl<
                 Arc::clone(&repos.vector_store),
                 enforcer.clone(),
             ),
-            models: ModelService::new(Arc::clone(&db), Arc::clone(&repos.model_pref), enforcer),
+            models: ModelService::new(
+                Arc::clone(&db),
+                Arc::clone(&repos.model_pref),
+                enforcer,
+                Arc::clone(model_resolver),
+            ),
             quota: QuotaService::new(
                 db,
                 Arc::clone(&repos.quota),

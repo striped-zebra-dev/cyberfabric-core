@@ -29,7 +29,7 @@ use crate::infra::db::repo::reaction_repo::ReactionRepository;
 use crate::infra::db::repo::thread_summary_repo::ThreadSummaryRepository;
 use crate::infra::db::repo::turn_repo::TurnRepository;
 use crate::infra::db::repo::vector_store_repo::VectorStoreRepository;
-use crate::infra::llm::providers::{ProviderConfig, ProviderKind, create_provider};
+use crate::infra::llm::provider_resolver::ProviderResolver;
 use crate::infra::model_policy::ModelPolicyGateway;
 
 /// Default URL prefix for all mini-chat REST routes.
@@ -73,6 +73,11 @@ impl Module for MiniChatModule {
         cfg.outbox
             .validate()
             .map_err(|e| anyhow::anyhow!("outbox config: {e}"))?;
+        for (id, entry) in &cfg.providers {
+            entry
+                .validate(id)
+                .map_err(|e| anyhow::anyhow!("providers config: {e}"))?;
+        }
 
         let vendor = cfg.vendor.trim().to_owned();
         if vendor.is_empty() {
@@ -115,15 +120,10 @@ impl Module for MiniChatModule {
             .get::<dyn ServiceGatewayClientV1>()
             .map_err(|e| anyhow::anyhow!("failed to get OAGW gateway: {e}"))?;
 
-        // TODO: provider kind and upstream alias should come from config in a
-        // follow-up — hardcoded to OpenAI Responses for initial P1 wiring.
-        let llm = create_provider(
-            gateway,
-            ProviderConfig {
-                kind: ProviderKind::OpenAiResponses,
-                upstream_alias: "openai".to_owned(),
-            },
-        );
+        // Register OAGW upstreams for each configured provider.
+        crate::infra::oagw_provisioning::register_oagw_upstreams(&gateway, &cfg.providers).await?;
+
+        let provider_resolver = Arc::new(ProviderResolver::new(&gateway, cfg.providers));
 
         let repos = Repositories {
             chat: Arc::new(ChatRepository::new(modkit_db::odata::LimitCfg {
@@ -148,8 +148,8 @@ impl Module for MiniChatModule {
             &repos,
             db,
             authz,
-            model_policy_gw.clone() as Arc<dyn crate::domain::repos::ModelResolver>,
-            llm,
+            &(model_policy_gw.clone() as Arc<dyn crate::domain::repos::ModelResolver>),
+            provider_resolver,
             cfg.streaming,
             model_policy_gw.clone() as Arc<dyn crate::domain::repos::PolicySnapshotProvider>,
             model_policy_gw as Arc<dyn crate::domain::repos::UserLimitsProvider>,

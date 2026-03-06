@@ -13,12 +13,13 @@ use crate::config::StreamingConfig;
 use crate::domain::error::DomainError;
 use crate::domain::repos::{
     ChatRepository, CreateTurnParams, InsertUserMessageParams, MessageRepository, TurnRepository,
+    model_resolver::ResolvedModel,
 };
 use crate::domain::stream_events::{DoneData, ErrorData, StreamEvent};
 use crate::infra::db::entity::chat_turn::{Model as TurnModel, TurnState};
 use crate::infra::llm::{
     ClientSseEvent, LlmMessage, LlmProvider, LlmProviderError, LlmRequestBuilder, TerminalOutcome,
-    Usage,
+    Usage, provider_resolver::ProviderResolver,
 };
 
 use super::{DbProvider, actions, resources};
@@ -240,7 +241,7 @@ pub struct StreamService<
     message_repo: Arc<MR>,
     chat_repo: Arc<CR>,
     enforcer: PolicyEnforcer,
-    llm: Arc<dyn LlmProvider>,
+    provider_resolver: Arc<ProviderResolver>,
     streaming_config: StreamingConfig,
     finalization: Arc<crate::domain::service::finalization_service::FinalizationService<TR, MR>>,
 }
@@ -255,7 +256,7 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static, CR: ChatRepo
         message_repo: Arc<MR>,
         chat_repo: Arc<CR>,
         enforcer: PolicyEnforcer,
-        llm: Arc<dyn LlmProvider>,
+        provider_resolver: Arc<ProviderResolver>,
         streaming_config: StreamingConfig,
         finalization: Arc<
             crate::domain::service::finalization_service::FinalizationService<TR, MR>,
@@ -267,7 +268,7 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static, CR: ChatRepo
             message_repo,
             chat_repo,
             enforcer,
-            llm,
+            provider_resolver,
             streaming_config,
             finalization,
         }
@@ -295,10 +296,13 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static, CR: ChatRepo
         chat_id: Uuid,
         request_id: Uuid,
         content: String,
-        model: String,
+        resolved_model: ResolvedModel,
         cancel: CancellationToken,
         tx: mpsc::Sender<StreamEvent>,
     ) -> Result<tokio::task::JoinHandle<StreamOutcome>, StreamError> {
+        let model = resolved_model.model_id;
+        let provider_id = resolved_model.provider_id;
+
         let tenant_id = ctx.subject_tenant_id();
         let user_id = ctx.subject_id();
 
@@ -420,8 +424,11 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static, CR: ChatRepo
         let message_id = Uuid::new_v4();
 
         // TODO(P3→P4): populate quota fields from PreflightDecision once preflight
-        // is wired in. For now, use zero/placeholder values — finalization still
-        // runs (settlement will be Released/Estimated with zero reserves).
+        // is wired in. For now, use conservative placeholder values so that
+        // settlement validation passes and turns finalize correctly.
+        // reserve_tokens must be large enough to avoid overshoot-capping on
+        // normal responses; max_output_tokens_applied and
+        // minimal_generation_floor_applied must be positive.
         let finalization_ctx = FinalizationCtx {
             finalization_svc: Arc::clone(&self.finalization),
             scope,
@@ -433,19 +440,29 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static, CR: ChatRepo
             message_id,
             effective_model: effective_model.clone(),
             selected_model: model.clone(),
-            reserve_tokens: 0,
-            max_output_tokens_applied: 0,
+            reserve_tokens: 1_000_000,
+            max_output_tokens_applied: 32_768,
             reserved_credits_micro: 0,
-            policy_version_applied: 0,
-            minimal_generation_floor_applied: 0,
+            policy_version_applied: 1,
+            minimal_generation_floor_applied: 50,
             quota_decision: "allow".to_owned(),
             downgrade_from: None,
             downgrade_reason: None,
             period_starts: Vec::new(),
         };
 
+        let resolved_provider = self.provider_resolver.resolve(&provider_id).map_err(|e| {
+            StreamError::TurnCreationFailed {
+                source: DomainError::internal(format!("provider resolution: {e}")),
+            }
+        })?;
+        // Build the full OAGW proxy path: {alias}{api_path} with {model} substituted.
+        let api_path = resolved_provider.api_path.replace("{model}", &model);
+        let proxy_path = format!("{}{api_path}", resolved_provider.upstream_alias);
+
         Ok(spawn_provider_task(
-            Arc::clone(&self.llm),
+            resolved_provider.adapter,
+            proxy_path,
             ctx,
             content,
             model,
@@ -473,6 +490,7 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static, CR: ChatRepo
 )]
 fn spawn_provider_task<TR: TurnRepository + 'static, MR: MessageRepository + 'static>(
     llm: Arc<dyn LlmProvider>,
+    upstream_alias: String,
     ctx: SecurityContext,
     content: String,
     model: String,
@@ -491,7 +509,9 @@ fn spawn_provider_task<TR: TurnRepository + 'static, MR: MessageRepository + 'st
             .build_streaming();
 
         // Call the provider to start streaming
-        let stream_result = llm.stream(ctx, request, cancel.clone()).await;
+        let stream_result = llm
+            .stream(ctx, request, &upstream_alias, cancel.clone())
+            .await;
 
         let mut provider_stream = match stream_result {
             Ok(s) => s,
@@ -1042,6 +1062,7 @@ mod tests {
             &self,
             _ctx: SecurityContext,
             _request: LlmRequest<Streaming>,
+            _upstream_alias: &str,
             cancel: CancellationToken,
         ) -> Result<ProviderStream, LlmProviderError> {
             let events = self.events.lock().unwrap().drain(..).collect::<Vec<_>>();
@@ -1053,6 +1074,7 @@ mod tests {
             &self,
             _ctx: SecurityContext,
             _request: LlmRequest<NonStreaming>,
+            _upstream_alias: &str,
         ) -> Result<ResponseResult, LlmProviderError> {
             unimplemented!("not needed for streaming tests")
         }
@@ -1074,6 +1096,7 @@ mod tests {
 
         let handle = spawn_provider_task::<TurnRepo, MsgRepo>(
             provider,
+            "test-alias".to_owned(),
             mock_ctx(),
             "hi".into(),
             "test-model".into(),
@@ -1117,6 +1140,7 @@ mod tests {
 
         let handle = spawn_provider_task::<TurnRepo, MsgRepo>(
             provider,
+            "test-alias".to_owned(),
             mock_ctx(),
             "hi".into(),
             "test-model".into(),
@@ -1156,6 +1180,7 @@ mod tests {
                 &self,
                 _ctx: SecurityContext,
                 _request: LlmRequest<Streaming>,
+                _upstream_alias: &str,
                 cancel: CancellationToken,
             ) -> Result<ProviderStream, LlmProviderError> {
                 let inner = stream::unfold(0u8, |state| async move {
@@ -1180,6 +1205,7 @@ mod tests {
                 &self,
                 _ctx: SecurityContext,
                 _request: LlmRequest<NonStreaming>,
+                _upstream_alias: &str,
             ) -> Result<ResponseResult, LlmProviderError> {
                 unimplemented!()
             }
@@ -1191,6 +1217,7 @@ mod tests {
 
         let handle = spawn_provider_task::<TurnRepo, MsgRepo>(
             provider,
+            "test-alias".to_owned(),
             mock_ctx(),
             "hi".into(),
             "test-model".into(),
@@ -1249,6 +1276,7 @@ mod tests {
             }
         }
 
+        let provider_resolver = Arc::new(ProviderResolver::single_provider(provider));
         let turn_repo = Arc::new(TurnRepo);
         let message_repo = Arc::new(MsgRepo::new(modkit_db::odata::LimitCfg {
             default: 20,
@@ -1270,7 +1298,7 @@ mod tests {
                 max: 100,
             })),
             mock_enforcer(),
-            provider,
+            provider_resolver,
             crate::config::StreamingConfig::default(),
             finalization,
         )
@@ -1367,7 +1395,10 @@ mod tests {
                 chat_id,
                 request_id,
                 "hello".into(),
-                "gpt-5.2".into(),
+                ResolvedModel {
+                    model_id: "gpt-5.2".into(),
+                    provider_id: "openai".into(),
+                },
                 cancel,
                 tx,
             )
@@ -1429,7 +1460,10 @@ mod tests {
                 chat_id,
                 Uuid::new_v4(),
                 "hello".into(),
-                "gpt-5.2".into(),
+                ResolvedModel {
+                    model_id: "gpt-5.2".into(),
+                    provider_id: "openai".into(),
+                },
                 cancel,
                 tx,
             )
@@ -1464,7 +1498,10 @@ mod tests {
                 chat_id,
                 Uuid::new_v4(),
                 "hello".into(),
-                "gpt-5.2".into(),
+                ResolvedModel {
+                    model_id: "gpt-5.2".into(),
+                    provider_id: "openai".into(),
+                },
                 cancel,
                 tx,
             )
@@ -1515,7 +1552,10 @@ mod tests {
                 chat_id,
                 request_id,
                 "hello".into(),
-                "gpt-5.2".into(),
+                ResolvedModel {
+                    model_id: "gpt-5.2".into(),
+                    provider_id: "openai".into(),
+                },
                 cancel1,
                 tx1,
             )
@@ -1540,7 +1580,10 @@ mod tests {
                 chat_id,
                 request_id,
                 "hello again".into(),
-                "gpt-5.2".into(),
+                ResolvedModel {
+                    model_id: "gpt-5.2".into(),
+                    provider_id: "openai".into(),
+                },
                 cancel2,
                 tx2,
             )
@@ -1572,6 +1615,7 @@ mod tests {
                 &self,
                 _ctx: SecurityContext,
                 _request: LlmRequest<Streaming>,
+                _upstream_alias: &str,
                 cancel: CancellationToken,
             ) -> Result<ProviderStream, LlmProviderError> {
                 let inner = stream::unfold(0u8, |state| async move {
@@ -1596,6 +1640,7 @@ mod tests {
                 &self,
                 _ctx: SecurityContext,
                 _request: LlmRequest<NonStreaming>,
+                _upstream_alias: &str,
             ) -> Result<ResponseResult, LlmProviderError> {
                 unimplemented!()
             }
@@ -1621,7 +1666,10 @@ mod tests {
                 chat_id,
                 request_id,
                 "hello".into(),
-                "gpt-5.2".into(),
+                ResolvedModel {
+                    model_id: "gpt-5.2".into(),
+                    provider_id: "openai".into(),
+                },
                 cancel.clone(),
                 tx,
             )
@@ -1686,7 +1734,10 @@ mod tests {
                 chat_id,
                 Uuid::new_v4(),
                 "hello".into(),
-                "gpt-5.2".into(),
+                ResolvedModel {
+                    model_id: "gpt-5.2".into(),
+                    provider_id: "openai".into(),
+                },
                 cancel,
                 tx,
             )
@@ -1723,7 +1774,10 @@ mod tests {
                 bogus_chat_id,
                 Uuid::new_v4(),
                 "hello".into(),
-                "gpt-5.2".into(),
+                ResolvedModel {
+                    model_id: "gpt-5.2".into(),
+                    provider_id: "openai".into(),
+                },
                 cancel,
                 tx,
             )

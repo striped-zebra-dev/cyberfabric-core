@@ -53,6 +53,9 @@ pub struct ModelCatalogEntry {
     pub provider_display_name: String,
     /// Human-readable multiplier display string (e.g. "1x", "3x").
     pub multiplier_display: String,
+    /// Routing identifier for provider resolution. Maps to a key in
+    /// `MiniChatConfig.providers`. Values: `"openai"`, `"azure_openai"`.
+    pub provider_id: String,
 }
 
 /// Model pricing/capability tier.

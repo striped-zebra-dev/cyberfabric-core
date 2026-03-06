@@ -1,5 +1,8 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
+use crate::infra::llm::ProviderKind;
 use crate::module::DEFAULT_URL_PREFIX;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -17,6 +20,82 @@ pub struct MiniChatConfig {
     pub quota: QuotaConfig,
     #[serde(default)]
     pub outbox: OutboxConfig,
+    /// Provider registry. Key = `provider_id` (matches [`ModelCatalogEntry::provider_id`]).
+    #[serde(default = "default_providers")]
+    pub providers: HashMap<String, ProviderEntry>,
+}
+
+/// Configuration for a single LLM provider.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderEntry {
+    /// Which adapter to use (e.g., `openai_responses`, `openai_chat_completions`).
+    pub kind: ProviderKind,
+    /// OAGW upstream alias (used in proxy URI: `/{alias}/...`).
+    /// Defaults to [`host`](ProviderEntry::host) when omitted.
+    #[serde(default)]
+    pub upstream_alias: Option<String>,
+    /// Upstream hostname (e.g., `api.openai.com`). Used for OAGW upstream
+    /// registration during module init.
+    pub host: String,
+    /// API path template for the responses endpoint.
+    /// Use `{model}` as placeholder for the deployment/model name.
+    /// Defaults to `/v1/responses` (`OpenAI` native).
+    /// Azure example: `/openai/deployments/{model}/responses?api-version=2025-03-01-preview`
+    #[serde(default = "default_api_path")]
+    pub api_path: String,
+    /// OAGW auth plugin type for this upstream (optional).
+    /// Example: `gts.x.core.oagw.auth_plugin.v1~x.core.oagw.apikey.v1`
+    #[serde(default)]
+    pub auth_plugin_type: Option<String>,
+    /// Auth plugin config (e.g., `header`, `prefix`, `secret_ref`).
+    #[serde(default)]
+    pub auth_config: Option<HashMap<String, String>>,
+}
+
+impl ProviderEntry {
+    /// Effective OAGW upstream alias — falls back to [`host`](Self::host) when
+    /// [`upstream_alias`](Self::upstream_alias) is not explicitly configured.
+    #[must_use]
+    pub fn effective_alias(&self) -> &str {
+        self.upstream_alias.as_deref().unwrap_or(&self.host)
+    }
+
+    /// Validate provider entry at startup.
+    pub fn validate(&self, provider_id: &str) -> Result<(), String> {
+        if self.host.trim().is_empty() {
+            return Err(format!("provider '{provider_id}': host must not be empty"));
+        }
+        Ok(())
+    }
+}
+
+fn default_api_path() -> String {
+    "/v1/responses".to_owned()
+}
+
+fn default_providers() -> HashMap<String, ProviderEntry> {
+    let mut m = HashMap::new();
+    m.insert(
+        "openai".to_owned(),
+        ProviderEntry {
+            kind: ProviderKind::OpenAiResponses,
+            upstream_alias: None,
+            host: "api.openai.com".to_owned(),
+            api_path: default_api_path(),
+            auth_plugin_type: Some(
+                "gts.x.core.oagw.auth_plugin.v1~x.core.oagw.apikey.v1".to_owned(),
+            ),
+            auth_config: Some({
+                let mut c = HashMap::new();
+                c.insert("header".to_owned(), "Authorization".to_owned());
+                c.insert("prefix".to_owned(), "Bearer ".to_owned());
+                c.insert("secret_ref".to_owned(), "cred://openai-key".to_owned());
+                c
+            }),
+        },
+    );
+    m
 }
 
 /// SSE streaming tuning parameters.
@@ -80,6 +159,7 @@ impl Default for MiniChatConfig {
             estimation_budgets: EstimationBudgets::default(),
             quota: QuotaConfig::default(),
             outbox: OutboxConfig::default(),
+            providers: default_providers(),
         }
     }
 }
@@ -377,5 +457,58 @@ mod tests {
             .validate()
             .is_err()
         );
+    }
+
+    #[test]
+    fn provider_entry_deser_with_alias() {
+        let json = r#"{
+            "kind": "openai_responses",
+            "host": "api.openai.com",
+            "upstream_alias": "custom-alias"
+        }"#;
+        let entry: ProviderEntry = serde_json::from_str(json).unwrap();
+        assert_eq!(entry.host, "api.openai.com");
+        assert_eq!(entry.effective_alias(), "custom-alias");
+        assert!(entry.auth_plugin_type.is_none());
+    }
+
+    #[test]
+    fn provider_entry_deser_without_alias() {
+        let json = r#"{
+            "kind": "openai_responses",
+            "host": "my-azure.openai.azure.com",
+            "api_path": "/openai/v1/responses"
+        }"#;
+        let entry: ProviderEntry = serde_json::from_str(json).unwrap();
+        assert_eq!(entry.effective_alias(), "my-azure.openai.azure.com");
+        assert_eq!(entry.api_path, "/openai/v1/responses");
+    }
+
+    #[test]
+    fn provider_entry_deser_with_auth() {
+        let json = r#"{
+            "kind": "openai_responses",
+            "host": "api.openai.com",
+            "auth_plugin_type": "gts.x.core.oagw.auth_plugin.v1~x.core.oagw.apikey.v1",
+            "auth_config": {
+                "header": "Authorization",
+                "prefix": "Bearer ",
+                "secret_ref": "cred://openai-key"
+            }
+        }"#;
+        let entry: ProviderEntry = serde_json::from_str(json).unwrap();
+        assert!(entry.auth_plugin_type.is_some());
+        let config = entry.auth_config.unwrap();
+        assert_eq!(config.get("header").unwrap(), "Authorization");
+        assert_eq!(config.get("secret_ref").unwrap(), "cred://openai-key");
+    }
+
+    #[test]
+    fn default_providers_has_openai() {
+        let cfg = MiniChatConfig::default();
+        assert!(cfg.providers.contains_key("openai"));
+        let openai = &cfg.providers["openai"];
+        assert_eq!(openai.effective_alias(), "api.openai.com");
+        assert_eq!(openai.api_path, "/v1/responses");
     }
 }
