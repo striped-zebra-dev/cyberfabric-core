@@ -90,7 +90,7 @@ modules:
       bind_addr: "127.0.0.1:8087"
       enable_docs: true
       cors_enabled: false
-
+      prefix_path: "/cf"
       # OpenAPI Documentation Configuration
       openapi:
         title: "HyperSpot API"
