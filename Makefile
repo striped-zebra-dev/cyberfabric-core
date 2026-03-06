@@ -296,15 +296,16 @@ test-macros:
 
 ## Run SQLite integration tests
 test-sqlite:
-	cargo test -p cf-modkit-db --features sqlite,integration
+	cargo test -p cf-modkit-db --features sqlite,integration,preview-outbox
+	cargo build -p cf-modkit-db --examples --features sqlite,preview-outbox
 
 ## Run PostgreSQL integration tests
 test-pg:
-	cargo test -p cf-modkit-db --features pg,integration
+	cargo test -p cf-modkit-db --features pg,integration,preview-outbox
 
 ## Run MySQL integration tests
 test-mysql:
-	cargo test -p cf-modkit-db --features mysql,integration
+	cargo test -p cf-modkit-db --features mysql,integration,preview-outbox
 
 # Run all database integration tests
 test-db: test-sqlite test-pg test-mysql

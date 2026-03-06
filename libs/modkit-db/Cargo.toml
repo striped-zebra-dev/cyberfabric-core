@@ -46,6 +46,9 @@ mysql = [
 
 integration = []
 
+# Transactional outbox pipeline (preview — API may change)
+preview-outbox = ["dep:tokio-util"]
+
 [dependencies]
 anyhow = { workspace = true }
 async-trait = { workspace = true }
@@ -73,6 +76,23 @@ serde_json = { workspace = true }
 dashmap = { workspace = true }
 figment = { workspace = true }
 sqlx = { workspace = true, optional = true }
+tokio-util = { workspace = true, optional = true }
+
+[[example]]
+name = "outbox_transactional"
+required-features = ["sqlite", "preview-outbox"]
+
+[[example]]
+name = "outbox_retry_reject"
+required-features = ["sqlite", "preview-outbox"]
+
+[[example]]
+name = "outbox_dead_letters"
+required-features = ["sqlite", "preview-outbox"]
+
+[[example]]
+name = "outbox_batch_multi_queue"
+required-features = ["sqlite", "preview-outbox"]
 
 [dev-dependencies]
 tempfile = { workspace = true }

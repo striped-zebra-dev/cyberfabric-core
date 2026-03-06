@@ -9,6 +9,7 @@
 //! # Features
 //! - `pg`, `mysql`, `sqlite`: enable `SQLx` backends
 //! - `sea-orm`: add `SeaORM` integration for type-safe operations
+//! - `preview-outbox`: enable the transactional outbox pipeline (experimental — API may change)
 //!
 //! # New Architecture
 //! The crate now supports:
@@ -80,6 +81,8 @@ pub mod migration_runner;
 pub mod odata;
 pub mod options;
 
+#[cfg(feature = "preview-outbox")]
+pub mod outbox;
 pub mod secure;
 
 mod db_provider;
