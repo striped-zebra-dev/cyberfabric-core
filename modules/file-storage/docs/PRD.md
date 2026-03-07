@@ -528,13 +528,17 @@ governance policies.
 
 - [ ] `p2` - **ID**: `cpt-cf-file-storage-fr-usage-reporting`
 
-The system **MUST** report storage usage data to the Usage Collector service. Usage reports **MUST** include per-tenant
+The system **MUST** report storage usage data to the Usage Collector service. Usage reports **MUST** include per-owner
 storage consumption (total bytes, file count) and **MUST** be emitted on every write operation that changes storage
-consumption (upload, delete, version creation, version deletion). The reporting mechanism **MUST** be asynchronous and
-**MUST NOT** block file operations if the Usage Collector is temporarily unavailable.
+consumption (upload, delete, version creation, version deletion) and on ownership transfer
+(`cpt-cf-file-storage-fr-ownership-transfer`). For ownership transfers, the system **MUST** emit a usage report for both
+the previous owner (storage decrease) and the new owner (storage increase). The reporting mechanism **MUST** be
+asynchronous and **MUST NOT** block file operations if the Usage Collector is temporarily unavailable.
 
-**Rationale**: Centralized usage data is required for metering, billing, capacity planning, and analytics. Asynchronous
-reporting ensures file operations are not degraded by usage collection availability.  
+**Rationale**: Centralized usage data is required for metering, billing, capacity planning, and analytics. Ownership
+transfers shift per-owner storage consumption without changing total platform storage — without debit/credit reporting,
+billing and quota data become stale after transfers. Asynchronous reporting ensures file operations are not degraded by
+usage collection availability.  
 **Actors**: `cpt-cf-file-storage-actor-platform-user`, `cpt-cf-file-storage-actor-cf-modules`
 
 #### Storage Quota Enforcement
