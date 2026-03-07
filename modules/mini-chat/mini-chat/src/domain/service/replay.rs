@@ -149,6 +149,16 @@ mod tests {
             unimplemented!()
         }
 
+        async fn find_user_message_by_request_id<C: DBRunner>(
+            &self,
+            _: &C,
+            _: &AccessScope,
+            _: Uuid,
+            _: Uuid,
+        ) -> Result<Option<MessageModel>, DomainError> {
+            unimplemented!()
+        }
+
         async fn find_by_chat_and_request_id<C: DBRunner>(
             &self,
             _: &C,

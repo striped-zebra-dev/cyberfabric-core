@@ -221,7 +221,7 @@ async fn replay_response(
 /// emits ping keepalives, and respects cancellation.
 ///
 /// Implements `Stream<Item = Result<Event, Infallible>>` for Axum SSE.
-struct SseRelay {
+pub(crate) struct SseRelay {
     rx: mpsc::Receiver<StreamEvent>,
     cancel: CancellationToken,
     phase: StreamPhase,
@@ -232,7 +232,11 @@ struct SseRelay {
 }
 
 impl SseRelay {
-    fn new(rx: mpsc::Receiver<StreamEvent>, cancel: CancellationToken, ping_secs: u64) -> Self {
+    pub(crate) fn new(
+        rx: mpsc::Receiver<StreamEvent>,
+        cancel: CancellationToken,
+        ping_secs: u64,
+    ) -> Self {
         Self {
             rx,
             cancel,

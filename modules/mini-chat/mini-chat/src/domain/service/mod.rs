@@ -28,6 +28,7 @@ mod stream_service;
 #[cfg(test)]
 pub(crate) mod test_helpers;
 pub(crate) mod token_estimator;
+mod turn_service;
 
 pub(crate) use attachment_service::AttachmentService;
 pub(crate) use chat_service::ChatService;
@@ -37,6 +38,7 @@ pub(crate) use model_service::ModelService;
 pub(crate) use quota_service::QuotaService;
 pub(crate) use reaction_service::ReactionService;
 pub(crate) use stream_service::{StreamError, StreamService};
+pub(crate) use turn_service::{MutationError, MutationResult, TurnService};
 
 pub(crate) type DbProvider = DBProvider<modkit_db::DbError>;
 
@@ -116,6 +118,7 @@ pub(crate) struct AppServices<
     pub(crate) chats: ChatService<CR>,
     pub(crate) messages: MessageService<MR, CR>,
     pub(crate) stream: StreamService<TR, MR, QR, CR>,
+    pub(crate) turns: TurnService<TR, MR, CR>,
     pub(crate) reactions: ReactionService<RR, MR, CR>,
     pub(crate) attachments: AttachmentService<CR>,
     pub(crate) models: ModelService,
@@ -123,6 +126,8 @@ pub(crate) struct AppServices<
     pub(crate) finalization: Arc<FinalizationService<TR, MR>>,
     pub(crate) db: Arc<DbProvider>,
     pub(crate) message_repo: Arc<MR>,
+    pub(crate) turn_repo: Arc<TR>,
+    pub(crate) enforcer: PolicyEnforcer,
 }
 
 impl<
@@ -166,6 +171,14 @@ impl<
             Arc::clone(&quota_svc) as Arc<dyn QuotaSettler>,
         ));
 
+        let turns = TurnService::new(
+            Arc::clone(&db),
+            Arc::clone(&repos.turn),
+            Arc::clone(&repos.message),
+            Arc::clone(&repos.chat),
+            enforcer.clone(),
+        );
+
         Self {
             chats: ChatService::new(
                 Arc::clone(&db),
@@ -191,6 +204,7 @@ impl<
                 Arc::clone(&finalization),
                 Arc::clone(&quota_svc),
             ),
+            turns,
             reactions: ReactionService::new(
                 Arc::clone(&db),
                 Arc::clone(&repos.reaction),
@@ -208,13 +222,15 @@ impl<
             models: ModelService::new(
                 Arc::clone(&db),
                 Arc::clone(&repos.model_pref),
-                enforcer,
+                enforcer.clone(),
                 Arc::clone(model_resolver),
             ),
             quota: Arc::clone(&quota_svc),
             finalization,
             db,
             message_repo: Arc::clone(&repos.message),
+            turn_repo: Arc::clone(&repos.turn),
+            enforcer,
         }
     }
 }

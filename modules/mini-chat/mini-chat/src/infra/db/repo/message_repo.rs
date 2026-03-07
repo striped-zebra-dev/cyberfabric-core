@@ -110,6 +110,27 @@ impl crate::domain::repos::MessageRepository for MessageRepository {
         Ok(secure_insert::<MessageEntity>(am, scope, runner).await?)
     }
 
+    async fn find_user_message_by_request_id<C: DBRunner>(
+        &self,
+        runner: &C,
+        scope: &AccessScope,
+        chat_id: Uuid,
+        request_id: Uuid,
+    ) -> Result<Option<MessageModel>, DomainError> {
+        Ok(MessageEntity::find()
+            .filter(
+                Condition::all()
+                    .add(Column::ChatId.eq(chat_id))
+                    .add(Column::RequestId.eq(request_id))
+                    .add(Column::Role.eq(MessageRole::User))
+                    .add(Column::DeletedAt.is_null()),
+            )
+            .secure()
+            .scope_with(scope)
+            .one(runner)
+            .await?)
+    }
+
     async fn find_by_chat_and_request_id<C: DBRunner>(
         &self,
         runner: &C,

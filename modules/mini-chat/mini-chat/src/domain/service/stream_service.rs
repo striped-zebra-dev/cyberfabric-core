@@ -617,6 +617,139 @@ impl<
             Some(finalization_ctx),
         ))
     }
+
+    /// Run streaming for an already-created turn (used by retry/edit mutations).
+    ///
+    /// The mutation transaction has already created the turn (state=running) and
+    /// user message. This method does quota preflight, writes reserves, resolves
+    /// the provider, and spawns the streaming task.
+    ///
+    /// Per design D3: mutation transaction commits first, streaming runs post-commit.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn run_stream_for_mutation(
+        &self,
+        ctx: SecurityContext,
+        chat_id: Uuid,
+        request_id: Uuid,
+        turn_id: Uuid,
+        content: String,
+        resolved_model: ResolvedModel,
+        cancel: CancellationToken,
+        tx: mpsc::Sender<StreamEvent>,
+    ) -> Result<tokio::task::JoinHandle<StreamOutcome>, StreamError> {
+        let model = resolved_model.model_id;
+        let provider_id = resolved_model.provider_id;
+        let tenant_id = ctx.subject_tenant_id();
+        let user_id = ctx.subject_id();
+        let scope = AccessScope::for_tenant(tenant_id);
+
+        // ── Preflight quota evaluate ────────────────────────────────────
+        let selected_model = model;
+        let computed = self
+            .quota
+            .preflight_evaluate(crate::domain::model::quota::PreflightInput {
+                tenant_id,
+                user_id,
+                selected_model: selected_model.clone(),
+                utf8_bytes: content.len() as u64,
+                num_images: 0,
+                tools_enabled: false,
+                web_search_enabled: false,
+                max_output_tokens_cap: self.streaming_config.max_output_tokens,
+            })
+            .await
+            .map_err(|e| StreamError::TurnCreationFailed { source: e })?;
+
+        let pf = flatten_preflight(computed.decision.clone())?;
+        let period_starts = computed.periods.clone();
+
+        // ── Write quota reserves ────────────────────────────────────────
+        let quota_repo = Arc::clone(&self.quota.repo);
+        let computed_for_tx = computed;
+
+        if !computed_for_tx.buckets.is_empty() {
+            self.db
+                .transaction(|txn| {
+                    use crate::domain::repos::IncrementReserveParams;
+                    Box::pin(async move {
+                        let reserve_scope = AccessScope::for_tenant(computed_for_tx.tenant_id);
+                        for bucket in &computed_for_tx.buckets {
+                            for (period_type, period_start) in &computed_for_tx.periods {
+                                quota_repo
+                                    .increment_reserve(
+                                        txn,
+                                        &reserve_scope,
+                                        IncrementReserveParams {
+                                            tenant_id: computed_for_tx.tenant_id,
+                                            user_id: computed_for_tx.user_id,
+                                            period_type: period_type.clone(),
+                                            period_start: *period_start,
+                                            bucket: bucket.clone(),
+                                            amount_micro: computed_for_tx.reserved_credits_micro,
+                                        },
+                                    )
+                                    .await
+                                    .map_err(|e| {
+                                        modkit_db::DbError::Other(anyhow::Error::new(e))
+                                    })?;
+                            }
+                        }
+                        Ok(())
+                    })
+                })
+                .await
+                .map_err(|e| StreamError::TurnCreationFailed {
+                    source: DomainError::database(e.to_string()),
+                })?;
+        }
+
+        // ── Build finalization context + resolve provider + spawn ────────
+        let message_id = Uuid::new_v4();
+
+        let finalization_ctx = FinalizationCtx {
+            finalization_svc: Arc::clone(&self.finalization),
+            scope,
+            turn_id,
+            tenant_id,
+            chat_id,
+            request_id,
+            user_id,
+            message_id,
+            effective_model: pf.effective_model.clone(),
+            selected_model: selected_model.clone(),
+            reserve_tokens: pf.reserve_tokens,
+            max_output_tokens_applied: pf.max_output_tokens_applied,
+            reserved_credits_micro: pf.reserved_credits_micro,
+            policy_version_applied: pf.policy_version_applied,
+            minimal_generation_floor_applied: pf.minimal_generation_floor_applied,
+            quota_decision: pf.quota_decision,
+            downgrade_from: pf.downgrade_from,
+            downgrade_reason: pf.downgrade_reason,
+            period_starts,
+        };
+
+        let resolved_provider = self.provider_resolver.resolve(&provider_id).map_err(|e| {
+            StreamError::TurnCreationFailed {
+                source: DomainError::internal(format!("provider resolution: {e}")),
+            }
+        })?;
+        let api_path = resolved_provider
+            .api_path
+            .replace("{model}", &pf.effective_model);
+        let proxy_path = format!("{}{api_path}", resolved_provider.upstream_alias);
+
+        Ok(spawn_provider_task(
+            resolved_provider.adapter,
+            proxy_path,
+            ctx,
+            content,
+            pf.effective_model,
+            pf.max_output_tokens_applied.cast_unsigned(),
+            cancel,
+            tx,
+            Some(finalization_ctx),
+        ))
+    }
 }
 
 /// Core provider task: reads from the LLM, translates events, and returns
@@ -1202,6 +1335,32 @@ mod tests {
                 ))]),
             }
         }
+
+        /// Provider that emits deltas then stops with `max_output_tokens` reason.
+        fn incomplete(deltas: &[&str]) -> Self {
+            let mut events: Vec<Result<TranslatedEvent, StreamingError>> = deltas
+                .iter()
+                .map(|text| {
+                    Ok(TranslatedEvent::Sse(ClientSseEvent::Delta {
+                        r#type: "text",
+                        content: (*text).to_owned(),
+                    }))
+                })
+                .collect();
+
+            events.push(Ok(TranslatedEvent::Terminal(TerminalOutcome::Incomplete {
+                reason: "max_output_tokens".to_owned(),
+                usage: Usage {
+                    input_tokens: 10,
+                    output_tokens: 4096,
+                },
+                partial_content: deltas.iter().copied().collect(),
+            })));
+
+            Self {
+                events: std::sync::Mutex::new(events),
+            }
+        }
     }
 
     #[async_trait::async_trait]
@@ -1315,6 +1474,53 @@ mod tests {
         let outcome = handle.await.expect("task should complete");
         assert_eq!(outcome.terminal, StreamTerminal::Failed);
         assert_eq!(outcome.error_code.as_deref(), Some("provider_timeout"));
+    }
+
+    /// Provider hitting `max_output_tokens` yields Incomplete outcome.
+    #[tokio::test]
+    async fn provider_incomplete_max_output_tokens() {
+        let provider: Arc<dyn LlmProvider> =
+            Arc::new(MockProvider::incomplete(&["Hello", ", wor"]));
+        let (tx, mut rx) = mpsc::channel::<StreamEvent>(32);
+        let cancel = CancellationToken::new();
+
+        let handle = spawn_provider_task::<TurnRepo, MsgRepo>(
+            provider,
+            "test-alias".to_owned(),
+            mock_ctx(),
+            "hi".into(),
+            "test-model".into(),
+            4096,
+            cancel,
+            tx,
+            None,
+        );
+
+        let mut events = Vec::new();
+        while let Some(ev) = rx.recv().await {
+            let is_term = ev.is_terminal();
+            events.push(ev);
+            if is_term {
+                break;
+            }
+        }
+
+        // 2 deltas + 1 done (incomplete maps to done event for client)
+        assert_eq!(events.len(), 3);
+        assert!(matches!(events[0], StreamEvent::Delta(_)));
+        assert!(matches!(events[1], StreamEvent::Delta(_)));
+        assert!(matches!(events[2], StreamEvent::Done(_)));
+
+        let outcome = handle.await.expect("task should complete");
+        assert_eq!(outcome.terminal, StreamTerminal::Incomplete);
+        assert_eq!(outcome.accumulated_text, "Hello, wor");
+        assert!(outcome.usage.is_some());
+        let usage = outcome.usage.unwrap();
+        assert_eq!(usage.output_tokens, 4096);
+        assert_eq!(
+            outcome.error_code.as_deref(),
+            Some("incomplete:max_output_tokens")
+        );
     }
 
     /// 6.6: Cancellation mid-stream.

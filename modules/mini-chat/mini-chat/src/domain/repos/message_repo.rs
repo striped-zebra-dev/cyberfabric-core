@@ -55,6 +55,16 @@ pub trait MessageRepository: Send + Sync {
         params: InsertAssistantMessageParams,
     ) -> Result<MessageModel, DomainError>;
 
+    /// SELECT the user-role message for a given `(chat_id, request_id)`.
+    /// Used by retry/edit to retrieve the original user message content.
+    async fn find_user_message_by_request_id<C: DBRunner>(
+        &self,
+        runner: &C,
+        scope: &AccessScope,
+        chat_id: Uuid,
+        request_id: Uuid,
+    ) -> Result<Option<MessageModel>, DomainError>;
+
     /// SELECT messages for a turn by `(chat_id, request_id)` where not deleted.
     async fn find_by_chat_and_request_id<C: DBRunner>(
         &self,
