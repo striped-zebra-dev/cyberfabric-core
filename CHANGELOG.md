@@ -9,6 +9,63 @@ release-plz updates this file in the Release PR.
 
 ## [Unreleased]
 
+## [0.1.5](https://github.com/cyberfabric/cyberfabric-core/compare/cf-static-tr-plugin-v0.1.4...cf-static-tr-plugin-v0.1.5) - 2026-03-07
+
+### Other
+
+- release (by @github-actions[bot]) - #927
+
+### Contributors
+
+* @github-actions[bot]
+
+## [0.1.1](https://github.com/cyberfabric/cyberfabric-core/compare/cf-static-credstore-plugin-v0.1.0...cf-static-credstore-plugin-v0.1.1) - 2026-03-07
+
+### Added
+
+- *(credstore)* distinguish shared vs global secrets in static plugin (by @aviator5)
+
+### Other
+
+- Merge pull request #928 from aviator5/static-credstore-plugin-improvements-2 (by @MikeFalcon77) - #928
+- release (by @github-actions[bot]) - #927
+
+### Contributors
+
+* @MikeFalcon77
+* @github-actions[bot]
+* @aviator5
+
+## [0.1.3](https://github.com/cyberfabric/cyberfabric-core/compare/cf-static-authz-plugin-v0.1.2...cf-static-authz-plugin-v0.1.3) - 2026-03-07
+
+### Other
+
+- release (by @github-actions[bot]) - #927
+
+### Contributors
+
+* @github-actions[bot]
+
+## [0.1.3](https://github.com/cyberfabric/cyberfabric-core/compare/cf-static-authn-plugin-v0.1.2...cf-static-authn-plugin-v0.1.3) - 2026-03-07
+
+### Other
+
+- release (by @github-actions[bot]) - #927
+
+### Contributors
+
+* @github-actions[bot]
+
+## [0.1.5](https://github.com/cyberfabric/cyberfabric-core/compare/cf-single-tenant-tr-plugin-v0.1.4...cf-single-tenant-tr-plugin-v0.1.5) - 2026-03-07
+
+### Other
+
+- release (by @github-actions[bot]) - #927
+
+### Contributors
+
+* @github-actions[bot]
+
 ## [0.1.5](https://github.com/cyberfabric/cyberfabric-core/compare/cf-static-tr-plugin-v0.1.4...cf-static-tr-plugin-v0.1.5) - 2026-03-06
 
 ### Other
