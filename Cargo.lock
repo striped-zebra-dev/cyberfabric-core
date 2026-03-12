@@ -1105,6 +1105,7 @@ dependencies = [
  "gts",
  "gts-macros",
  "schemars 1.2.1",
+ "secrecy",
  "serde",
  "serde_json",
  "thiserror 2.0.18",

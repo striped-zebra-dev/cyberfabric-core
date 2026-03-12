@@ -42,6 +42,9 @@ serde_json = { workspace = true }
 # Logging
 tracing = { workspace = true }
 
+# Secrets
+secrecy = { workspace = true }
+
 # Required by modkit::module macro
 inventory = { workspace = true }
 
