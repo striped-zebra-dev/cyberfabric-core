@@ -119,7 +119,7 @@ impl ServiceGatewayClientV1 for ServiceGatewayClientV1Facade {
     async fn list_routes(
         &self,
         ctx: SecurityContext,
-        upstream_id: Uuid,
+        upstream_id: Option<Uuid>,
         query: &oagw_sdk::ListQuery,
     ) -> Result<Vec<oagw_sdk::Route>, ServiceGatewayError> {
         let q = model::ListQuery {

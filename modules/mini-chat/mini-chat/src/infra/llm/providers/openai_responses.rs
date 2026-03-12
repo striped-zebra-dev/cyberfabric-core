@@ -1021,7 +1021,7 @@ mod tests {
         async fn list_routes(
             &self,
             _: SecurityContext,
-            _: uuid::Uuid,
+            _: Option<uuid::Uuid>,
             _: &ListQuery,
         ) -> Result<Vec<Route>, ServiceGatewayError> {
             unimplemented!()

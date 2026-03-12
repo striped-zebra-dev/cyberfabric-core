@@ -498,7 +498,7 @@ async fn list_routes_filters_by_upstream() {
 
     let resp = h
         .api_v1()
-        .list_routes(&upstream_gts_ids[0])
+        .list_routes(Some(&upstream_gts_ids[0]))
         .expect_status(200)
         .await;
 

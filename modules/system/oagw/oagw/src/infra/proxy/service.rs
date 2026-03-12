@@ -1387,7 +1387,7 @@ mod tests {
             async fn list_routes(
                 &self,
                 _: &SecurityContext,
-                _: Uuid,
+                _: Option<Uuid>,
                 _: &ListQuery,
             ) -> Result<Vec<Route>, DomainError> {
                 unimplemented!()

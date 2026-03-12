@@ -7,7 +7,7 @@ use modkit_security::SecurityContext;
 
 use crate::api::rest::dto::{CreateRouteRequest, RouteResponse, UpdateRouteRequest};
 use crate::api::rest::error::domain_error_to_problem;
-use crate::api::rest::extractors::{PaginationQuery, parse_gts_id};
+use crate::api::rest::extractors::parse_gts_id;
 use crate::domain::gts_helpers as gts;
 use crate::domain::model::Route;
 use crate::module::AppState;
@@ -55,20 +55,42 @@ pub async fn get_route(
     Ok(Json(to_response(route)))
 }
 
+/// Query parameters for `GET /oagw/v1/routes`.
+#[derive(Debug, serde::Deserialize)]
+pub struct ListRoutesQuery {
+    /// Optional upstream GTS identifier to filter routes by upstream.
+    #[serde(default)]
+    pub upstream_id: Option<String>,
+    #[serde(default = "default_limit")]
+    pub limit: u32,
+    #[serde(default)]
+    pub offset: u32,
+}
+
+fn default_limit() -> u32 {
+    50
+}
+
 pub async fn list_routes(
     Extension(state): Extension<AppState>,
     Extension(ctx): Extension<SecurityContext>,
-    Path(upstream_id): Path<String>,
-    Query(pagination): Query<PaginationQuery>,
+    Query(params): Query<ListRoutesQuery>,
 ) -> Result<impl IntoResponse, Problem> {
-    let instance = format!("/oagw/v1/upstreams/{upstream_id}/routes");
-    let upstream_uuid = parse_gts_id(&upstream_id, &instance)?;
-    let query = pagination.to_list_query();
+    let instance = "/oagw/v1/routes";
+    let upstream_uuid = params
+        .upstream_id
+        .as_deref()
+        .map(|id| parse_gts_id(id, instance))
+        .transpose()?;
+    let query = crate::domain::model::ListQuery {
+        top: params.limit.min(100),
+        skip: params.offset,
+    };
     let routes = state
         .cp
         .list_routes(&ctx, upstream_uuid, &query)
         .await
-        .map_err(|e| domain_error_to_problem(e, &instance))?;
+        .map_err(|e| domain_error_to_problem(e, instance))?;
     let response: Vec<RouteResponse> = routes.into_iter().map(to_response).collect();
     Ok(Json(response))
 }

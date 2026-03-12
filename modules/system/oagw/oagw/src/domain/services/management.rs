@@ -312,12 +312,12 @@ impl ControlPlaneService for ControlPlaneServiceImpl {
     async fn list_routes(
         &self,
         ctx: &SecurityContext,
-        upstream_id: Uuid,
+        upstream_id: Option<Uuid>,
         query: &ListQuery,
     ) -> Result<Vec<Route>, DomainError> {
         let tenant_id = ctx.subject_tenant_id();
         self.routes
-            .list_by_upstream(tenant_id, upstream_id, query)
+            .list(tenant_id, upstream_id, query)
             .await
             .map_err(DomainError::from)
     }
