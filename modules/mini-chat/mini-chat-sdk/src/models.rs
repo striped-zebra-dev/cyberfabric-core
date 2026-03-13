@@ -42,8 +42,10 @@ pub struct ModelCatalogEntry {
     /// Display name shown in UI (may differ from `name`).
     pub display_name: String,
     /// Short description of the model.
+    #[serde(default)]
     pub description: String,
     /// Model version string.
+    #[serde(default)]
     pub version: String,
     /// LLM provider CTI identifier.
     pub provider_id: String,
@@ -51,11 +53,14 @@ pub struct ModelCatalogEntry {
     /// `MiniChatConfig.providers`. Values: `"openai"`, `"azure_openai"`.
     pub provider_display_name: String,
     /// URL to model icon.
+    #[serde(default)]
     pub icon: String,
     /// Model tier (standard or premium).
     pub tier: ModelTier,
+    #[serde(default)]
     pub enabled: bool,
     /// Multimodal capability flags, e.g. `VISION_INPUT`, `IMAGE_GENERATION`.
+    #[serde(default)]
     pub multimodal_capabilities: Vec<String>,
     /// Maximum context window size in tokens.
     pub context_window: u32,
@@ -68,8 +73,10 @@ pub struct ModelCatalogEntry {
     /// Credit multiplier for output tokens (micro-credits per 1000 tokens).
     pub output_tokens_credit_multiplier_micro: u64,
     /// Human-readable multiplier display string (e.g. "1x", "3x").
+    #[serde(default)]
     pub multiplier_display: String,
     /// Per-model token estimation budgets for preflight reserve.
+    #[serde(default)]
     pub estimation_budgets: EstimationBudgets,
     /// Top-k chunks returned by similarity search per `file_search` call.
     pub max_retrieved_chunks_per_turn: u32,
@@ -453,8 +460,78 @@ mod tests {
         assert_eq!(deserialized.tier, original.tier);
     }
 
-    // ── ModelCatalogEntry: system_prompt serde contract ──
-    // `system_prompt` defaults to empty string when absent in JSON input.
+    // ── ModelCatalogEntry: optional fields default when absent ──
+    // Fields with `#[serde(default)]` must deserialize to sensible values
+    // when omitted from JSON, so partial configs don't fail to load.
+
+    #[test]
+    fn optional_fields_absent_in_json_deserialize_to_defaults() {
+        let mut json = serde_json::to_value(sample_catalog_entry()).unwrap();
+        let obj = json.as_object_mut().unwrap();
+        obj.remove("description");
+        obj.remove("version");
+        obj.remove("icon");
+        obj.remove("enabled");
+        obj.remove("multimodal_capabilities");
+        obj.remove("multiplier_display");
+        obj.remove("estimation_budgets");
+        obj.remove("system_prompt");
+        obj.remove("thread_summary_prompt");
+
+        let entry: ModelCatalogEntry = serde_json::from_value(json).unwrap();
+        assert!(entry.description.is_empty());
+        assert!(entry.version.is_empty());
+        assert!(entry.icon.is_empty());
+        assert!(!entry.enabled);
+        assert!(entry.multimodal_capabilities.is_empty());
+        assert!(entry.multiplier_display.is_empty());
+        assert_eq!(
+            entry.estimation_budgets.bytes_per_token_conservative,
+            EstimationBudgets::default().bytes_per_token_conservative
+        );
+        assert!(entry.system_prompt.is_empty());
+        assert!(entry.thread_summary_prompt.is_empty());
+    }
+
+    // ── ModelCatalogEntry: estimation_budgets serde contract ──
+    // `estimation_budgets` defaults to `EstimationBudgets::default()` when absent.
+
+    #[test]
+    fn estimation_budgets_absent_in_json_deserializes_to_default() {
+        let mut json = serde_json::to_value(sample_catalog_entry()).unwrap();
+        json.as_object_mut().unwrap().remove("estimation_budgets");
+
+        let entry: ModelCatalogEntry = serde_json::from_value(json).unwrap();
+        let expected = EstimationBudgets::default();
+        assert_eq!(
+            entry.estimation_budgets.bytes_per_token_conservative,
+            expected.bytes_per_token_conservative
+        );
+        assert_eq!(
+            entry.estimation_budgets.fixed_overhead_tokens,
+            expected.fixed_overhead_tokens
+        );
+        assert_eq!(
+            entry.estimation_budgets.safety_margin_pct,
+            expected.safety_margin_pct
+        );
+        assert_eq!(
+            entry.estimation_budgets.image_token_budget,
+            expected.image_token_budget
+        );
+        assert_eq!(
+            entry.estimation_budgets.tool_surcharge_tokens,
+            expected.tool_surcharge_tokens
+        );
+        assert_eq!(
+            entry.estimation_budgets.web_search_surcharge_tokens,
+            expected.web_search_surcharge_tokens
+        );
+        assert_eq!(
+            entry.estimation_budgets.minimal_generation_floor,
+            expected.minimal_generation_floor
+        );
+    }
 
     #[test]
     fn system_prompt_absent_in_json_deserializes_to_empty() {
