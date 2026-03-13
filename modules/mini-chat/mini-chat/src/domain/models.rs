@@ -66,6 +66,7 @@ pub struct Message {
     pub role: String,
     pub content: String,
     pub attachments: Vec<AttachmentSummary>,
+    pub my_reaction: Option<ReactionKind>,
     pub model: Option<String>,
     pub input_tokens: Option<i64>,
     pub output_tokens: Option<i64>,

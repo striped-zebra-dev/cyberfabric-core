@@ -123,7 +123,7 @@ pub(crate) struct AppServices<
     TSR: ThreadSummaryRepository + 'static,
 > {
     pub(crate) chats: ChatService<CR, TSR>,
-    pub(crate) messages: MessageService<MR, CR>,
+    pub(crate) messages: MessageService<MR, CR, RR>,
     pub(crate) stream: StreamService<TR, MR, QR, CR, TSR>,
     pub(crate) turns: TurnService<TR, MR, CR>,
     pub(crate) reactions: ReactionService<RR, MR, CR>,
@@ -202,6 +202,7 @@ impl<
                 Arc::clone(&db),
                 Arc::clone(&repos.message),
                 Arc::clone(&repos.chat),
+                Arc::clone(&repos.reaction),
                 enforcer.clone(),
             ),
             stream: StreamService::new(

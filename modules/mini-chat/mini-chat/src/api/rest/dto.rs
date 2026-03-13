@@ -75,6 +75,7 @@ pub struct MessageDto {
     pub role: String,
     pub content: String,
     pub attachments: Vec<AttachmentSummaryDto>,
+    pub my_reaction: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -97,6 +98,7 @@ impl From<crate::domain::models::Message> for MessageDto {
                 .into_iter()
                 .map(AttachmentSummaryDto::from)
                 .collect(),
+            my_reaction: m.my_reaction.map(|r| r.as_str().to_owned()),
             model: m.model,
             input_tokens: m.input_tokens,
             output_tokens: m.output_tokens,

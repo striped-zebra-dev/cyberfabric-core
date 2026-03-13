@@ -579,6 +579,7 @@
                           "img_thumbnail": null
                         }
                       ],
+                      "my_reaction": null,
                       "created_at": "2025-06-15T10:35:30Z"
                     },
                     {
@@ -590,6 +591,7 @@
                       "input_tokens": 500,
                       "output_tokens": 120,
                       "attachments": [],
+                      "my_reaction": "like",
                       "created_at": "2025-06-15T10:35:45Z"
                     }
                   ],
@@ -1435,7 +1437,7 @@
       },
       "Message": {
         "type": "object",
-        "required": ["id", "request_id", "role", "content", "attachments", "created_at"],
+        "required": ["id", "request_id", "role", "content", "attachments", "my_reaction", "created_at"],
         "description": "A single message in a chat (user, assistant, or system).",
         "properties": {
           "id": {
@@ -1472,6 +1474,11 @@
               "$ref": "#/components/schemas/AttachmentSummary"
             },
             "description": "Always-present list of attachment summaries associated with this message. Contains lightweight metadata sufficient for UI rendering (kind, filename, status, thumbnail). Empty array when no attachments. Full attachment details (doc_summary, size_bytes, content_type, error_code) are available via GET /v1/chats/{id}/attachments/{attachment_id}."
+          },
+          "my_reaction": {
+            "type": ["string", "null"],
+            "enum": ["like", "dislike", null],
+            "description": "The requesting user's reaction on this message. Null when no reaction exists or when the message role is not assistant (only assistant messages support reactions)."
           },
           "created_at": {
             "type": "string",
