@@ -1,5 +1,5 @@
-use crate::CompareOperator::{self, *};
-use crate::{Expr, Value, parse_str};
+use crate::odata_filters::CompareOperator::{self, *};
+use crate::odata_filters::{Expr, Value, parse_str};
 use bigdecimal::BigDecimal;
 use std::str::FromStr;
 
@@ -167,25 +167,25 @@ fn datetime_value() {
     assert_eq!(
         result,
         Expr::Or(
-            Expr::Compare(
-                Expr::Identifier("AT".to_owned()).into(),
-                CompareOperator::Equal,
-                Expr::Value(Value::DateTime("2024-06-24T12:34:56Z".parse().unwrap())).into()
-            )
-            .into(),
             Expr::Or(
+                Expr::Compare(
+                    Expr::Identifier("AT".to_owned()).into(),
+                    CompareOperator::Equal,
+                    Expr::Value(Value::DateTime("2024-06-24T12:34:56Z".parse().unwrap())).into()
+                )
+                .into(),
                 Expr::Compare(
                     Expr::Identifier("AT".to_owned()).into(),
                     CompareOperator::GreaterThan,
                     Expr::Value(Value::DateTime("2024-06-24T10:34:56Z".parse().unwrap())).into()
                 )
-                .into(),
-                Expr::Compare(
-                    Expr::Identifier("AT".to_owned()).into(),
-                    CompareOperator::LessThan,
-                    Expr::Value(Value::DateTime("2024-06-24T17:34:56Z".parse().unwrap())).into()
-                )
                 .into()
+            )
+            .into(),
+            Expr::Compare(
+                Expr::Identifier("AT".to_owned()).into(),
+                CompareOperator::LessThan,
+                Expr::Value(Value::DateTime("2024-06-24T17:34:56Z".parse().unwrap())).into()
             )
             .into()
         )
@@ -219,7 +219,7 @@ fn escaped_string_comparison() {
         Expr::Compare(
             Expr::Identifier("name".to_owned()).into(),
             Equal,
-            Expr::Value(Value::String(String::from("Ω S'mores"))).into()
+            Expr::Value(Value::String(String::from("\u{3a9} S'mores"))).into()
         )
     );
 }
@@ -822,6 +822,72 @@ fn multiple_nested_functions() {
                     Expr::Identifier("description".to_owned()),
                     Expr::Value(Value::String("sample".to_owned()))
                 ]
+            )
+            .into()
+        )
+    );
+}
+
+#[test]
+fn and_binds_tighter_than_or() {
+    let filter = "aa eq 1 and bb eq 2 or cc eq 3";
+    let result = parse_str(filter).expect("valid filter tree");
+
+    assert_eq!(
+        result,
+        Expr::Or(
+            Expr::And(
+                Expr::Compare(
+                    Expr::Identifier("aa".to_owned()).into(),
+                    Equal,
+                    Expr::Value(Value::Number(BigDecimal::from_str("1").unwrap())).into()
+                )
+                .into(),
+                Expr::Compare(
+                    Expr::Identifier("bb".to_owned()).into(),
+                    Equal,
+                    Expr::Value(Value::Number(BigDecimal::from_str("2").unwrap())).into()
+                )
+                .into()
+            )
+            .into(),
+            Expr::Compare(
+                Expr::Identifier("cc".to_owned()).into(),
+                Equal,
+                Expr::Value(Value::Number(BigDecimal::from_str("3").unwrap())).into()
+            )
+            .into()
+        )
+    );
+}
+
+#[test]
+fn or_does_not_capture_and_rhs() {
+    let filter = "aa eq 1 or bb eq 2 and cc eq 3";
+    let result = parse_str(filter).expect("valid filter tree");
+
+    assert_eq!(
+        result,
+        Expr::Or(
+            Expr::Compare(
+                Expr::Identifier("aa".to_owned()).into(),
+                Equal,
+                Expr::Value(Value::Number(BigDecimal::from_str("1").unwrap())).into()
+            )
+            .into(),
+            Expr::And(
+                Expr::Compare(
+                    Expr::Identifier("bb".to_owned()).into(),
+                    Equal,
+                    Expr::Value(Value::Number(BigDecimal::from_str("2").unwrap())).into()
+                )
+                .into(),
+                Expr::Compare(
+                    Expr::Identifier("cc".to_owned()).into(),
+                    Equal,
+                    Expr::Value(Value::Number(BigDecimal::from_str("3").unwrap())).into()
+                )
+                .into()
             )
             .into()
         )

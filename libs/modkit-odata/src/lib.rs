@@ -545,6 +545,8 @@ impl From<Option<ast::Expr>> for ODataQuery {
     }
 }
 
+#[cfg(test)]
+mod odata_parse_tests;
 mod tests;
 
 mod convert_odata_filters {

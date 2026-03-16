@@ -30,11 +30,6 @@ enum AfterValueExpr {
     End,
 }
 
-enum FilterTail {
-    Or(Result<Expr, ParseError>),
-    And(Result<Expr, ParseError>),
-}
-
 peg::parser! {
     /// Parses `OData` v4 `$filter` expressions.
     grammar odata_filter() for str {
@@ -44,21 +39,26 @@ peg::parser! {
         pub(super) rule parse_str() -> Result<Expr, ParseError>
             = filter()
 
-        /// Parses a filter expression.
+        /// Parses a filter expression (alias for `or_expr`).
         rule filter() -> Result<Expr, ParseError>
-            = "not" _ e:filter() { Ok(Expr::Not(Box::new(e?))) }
-            / l:any_expr() t:filter_tail()? {
-                match t {
-                    None => l,
-                    Some(super::FilterTail::Or(r)) => Ok(Expr::Or(Box::new(l?), Box::new(r?))),
-                    Some(super::FilterTail::And(r)) => Ok(Expr::And(Box::new(l?), Box::new(r?))),
-                }
+            = or_expr()
+
+        /// Parses a left-associative chain of `and_expr` separated by "or".
+        rule or_expr() -> Result<Expr, ParseError>
+            = l:and_expr() rest:(_ "or" _ r:and_expr() { r })* {
+                rest.into_iter().fold(l, |acc, r| Ok(Expr::Or(Box::new(acc?), Box::new(r?))))
             }
 
-        /// Parses the optional `or`/`and` tail after an expression.
-        rule filter_tail() -> super::FilterTail
-            = _ "or" _ r:filter() { super::FilterTail::Or(r) }
-            / _ "and" _ r:filter() { super::FilterTail::And(r) }
+        /// Parses a left-associative chain of `unary_expr` separated by "and".
+        rule and_expr() -> Result<Expr, ParseError>
+            = l:unary_expr() rest:(_ "and" _ r:unary_expr() { r })* {
+                rest.into_iter().fold(l, |acc, r| Ok(Expr::And(Box::new(acc?), Box::new(r?))))
+            }
+
+        /// Parses "not" prefix or falls through to a primary expression.
+        rule unary_expr() -> Result<Expr, ParseError>
+            = "not" _ e:unary_expr() { Ok(Expr::Not(Box::new(e?))) }
+            / any_expr()
 
         /// Parses any expression, including grouped expressions and value expressions.
         rule any_expr() -> Result<Expr, ParseError>
