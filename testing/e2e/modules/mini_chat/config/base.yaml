@@ -505,6 +505,3 @@ modules:
         - tenant_id: "00000000-df51-5b42-9538-d2b56b7ee953"
           key: "azure-openai-key"
           value: "REPLACE_WITH_AZURE_KEY"
-
-tracing:
-  enabled: false

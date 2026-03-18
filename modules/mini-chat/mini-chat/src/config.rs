@@ -58,10 +58,10 @@ pub enum StorageKind {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MetricsConfig {
-    /// Metric name prefix. When absent, derived from the module name
-    /// by converting it to `snake_case` (e.g., `"mini-chat"` → `"mini_chat"`).
+    /// Metric name prefix. When empty (the default), derived from the module
+    /// name by converting it to `snake_case` (e.g., `"mini-chat"` → `"mini_chat"`).
     #[serde(default)]
-    pub prefix: Option<String>,
+    pub prefix: String,
 }
 
 impl MetricsConfig {
@@ -69,14 +69,12 @@ impl MetricsConfig {
     /// `snake_case(module_name)`.
     #[must_use]
     pub fn effective_prefix(&self, module_name: &str) -> String {
-        self.prefix
-            .as_deref()
-            .map(str::trim)
-            .filter(|p| !p.is_empty())
-            .map_or_else(
-                || heck::ToSnakeCase::to_snake_case(module_name),
-                str::to_owned,
-            )
+        let trimmed = self.prefix.trim();
+        if trimmed.is_empty() {
+            heck::ToSnakeCase::to_snake_case(module_name)
+        } else {
+            trimmed.to_owned()
+        }
     }
 }
 
@@ -1299,5 +1297,29 @@ mod tests {
             },
         };
         assert!(entry.validate("azure_openai").is_ok());
+    }
+
+    #[test]
+    fn metrics_effective_prefix_uses_module_name_when_empty() {
+        let cfg = MetricsConfig {
+            prefix: String::new(),
+        };
+        assert_eq!(cfg.effective_prefix("mini-chat"), "mini_chat");
+    }
+
+    #[test]
+    fn metrics_effective_prefix_uses_module_name_when_whitespace() {
+        let cfg = MetricsConfig {
+            prefix: "   ".to_owned(),
+        };
+        assert_eq!(cfg.effective_prefix("mini-chat"), "mini_chat");
+    }
+
+    #[test]
+    fn metrics_effective_prefix_uses_trimmed_explicit_prefix() {
+        let cfg = MetricsConfig {
+            prefix: "  custom.prefix  ".to_owned(),
+        };
+        assert_eq!(cfg.effective_prefix("mini-chat"), "custom.prefix");
     }
 }

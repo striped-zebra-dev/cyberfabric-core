@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use tracing::Level;
 
 use crate::ConfigProvider;
-use crate::telemetry::TracingConfig;
+use crate::telemetry::OpenTelemetryConfig;
 use url::Url;
 
 /// Error type for vendor configuration access.
@@ -99,9 +99,9 @@ pub struct AppConfig {
     /// Logging configuration
     #[serde(default = "default_logging_config")]
     pub logging: LoggingConfig,
-    /// Tracing configuration.
+    /// OpenTelemetry configuration (resource, tracing, metrics).
     #[serde(default)]
-    pub tracing: TracingConfig,
+    pub opentelemetry: OpenTelemetryConfig,
     /// Directory containing per-module YAML files (optional).
     #[serde(default)]
     pub modules_dir: Option<String>,
@@ -121,7 +121,7 @@ impl Default for AppConfig {
             server,
             database: None,
             logging: default_logging_config(),
-            tracing: TracingConfig::default(),
+            opentelemetry: OpenTelemetryConfig::default(),
             modules_dir: None,
             modules: HashMap::new(),
             vendor: VendorConfig::new(),
@@ -1056,7 +1056,7 @@ impl RenderedDbConfig {
 /// - Database configuration (structured, for field-by-field merge in `OoP`)
 /// - Module config section
 /// - Logging configuration (for key-by-key merge in `OoP`)
-/// - Tracing configuration for OTEL
+/// - OpenTelemetry configuration (resource, tracing, metrics)
 ///
 /// The runtime section is excluded as it's only relevant for the master host.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1072,9 +1072,9 @@ pub struct RenderedModuleConfig {
     /// `OoP` module will merge this with local --config (local keys override master keys).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub logging: Option<LoggingConfig>,
-    /// Tracing configuration from master host for OTEL initialization
+    /// OpenTelemetry configuration from master host (resource, tracing, metrics).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub tracing: Option<TracingConfig>,
+    pub opentelemetry: Option<OpenTelemetryConfig>,
 }
 
 impl RenderedModuleConfig {
@@ -1140,9 +1140,9 @@ pub fn render_module_config_for_oop(
     // Pass logging config from master host so OoP modules can merge with their local config
     let logging = app.logging.clone();
 
-    // Pass tracing config from master host so OoP modules use the same OTEL settings
-    let tracing = if app.tracing.enabled {
-        Some(app.tracing.clone())
+    // Pass OpenTelemetry config from master host so OoP modules use the same settings
+    let opentelemetry = if app.opentelemetry.tracing.enabled || app.opentelemetry.metrics.enabled {
+        Some(app.opentelemetry.clone())
     } else {
         None
     };
@@ -1151,7 +1151,7 @@ pub fn render_module_config_for_oop(
         database,
         config,
         logging: Some(logging),
-        tracing,
+        opentelemetry,
     })
 }
 

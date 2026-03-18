@@ -362,5 +362,9 @@ modules:
             is_default: false
             sort_order: 1
 
-tracing:
-  enabled: false
+# OpenTelemetry configuration (resource identity, tracing, metrics)
+opentelemetry:
+  tracing:
+    enabled: false
+  metrics:
+    enabled: false
