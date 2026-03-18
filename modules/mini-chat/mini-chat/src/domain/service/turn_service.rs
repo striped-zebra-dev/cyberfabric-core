@@ -102,6 +102,9 @@ pub struct MutationResult {
     /// Snapshot boundary computed before the new user message was persisted.
     /// Ensures deterministic context assembly (DESIGN `§ContextPlan` Determinism P1).
     pub snapshot_boundary: Option<crate::domain::repos::SnapshotBoundary>,
+    /// Chat model carried from the mutation transaction so the handler can
+    /// resolve the provider without a redundant DB round-trip.
+    pub chat_model: String,
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -159,10 +162,11 @@ impl<
         chat_id: Uuid,
         request_id: Uuid,
     ) -> Result<TurnModel, MutationError> {
-        let scope = self
+        let chat_scope = self
             .enforcer
             .access_scope(ctx, &resources::CHAT, actions::READ_TURN, Some(chat_id))
-            .await?;
+            .await?
+            .ensure_owner(ctx.subject_id());
 
         let conn = self.db.conn().map_err(|e| MutationError::Internal {
             message: e.to_string(),
@@ -170,14 +174,14 @@ impl<
 
         // Verify chat exists (scoped by authz)
         self.chat_repo
-            .get(&conn, &scope, chat_id)
+            .get(&conn, &chat_scope, chat_id)
             .await
             .map_err(|e| MutationError::Internal {
                 message: e.to_string(),
             })?
             .ok_or(MutationError::ChatNotFound { chat_id })?;
 
-        let scope = scope.tenant_only();
+        let scope = chat_scope.tenant_only();
 
         self.turn_repo
             .find_by_chat_and_request_id(&conn, &scope, chat_id, request_id)
@@ -201,23 +205,25 @@ impl<
     ) -> Result<(), MutationError> {
         info!(%chat_id, %request_id, "turn delete");
 
-        let scope = self
+        let chat_scope = self
             .enforcer
             .access_scope(ctx, &resources::CHAT, actions::DELETE_TURN, Some(chat_id))
-            .await?;
+            .await?
+            .ensure_owner(ctx.subject_id());
 
         let start = std::time::Instant::now();
 
         let turn_repo = Arc::clone(&self.turn_repo);
+        let message_repo = Arc::clone(&self.message_repo);
         let chat_repo = Arc::clone(&self.chat_repo);
-        let scope_tx = scope.clone();
+        let scope_tx = chat_scope.clone();
         let ctx_clone = ctx.clone();
 
         let result = self
             .db
             .transaction(|tx| {
                 Box::pin(async move {
-                    let (scope, target) = validate_mutation(
+                    let (scope, target, _chat_model) = validate_mutation(
                         &*chat_repo,
                         &*turn_repo,
                         &scope_tx,
@@ -231,6 +237,10 @@ impl<
 
                     turn_repo
                         .soft_delete(tx, &scope, target.id, None)
+                        .await
+                        .map_err(|e| modkit_db::DbError::Other(anyhow::Error::new(e)))?;
+                    message_repo
+                        .soft_delete_by_request_id(tx, &scope, chat_id, request_id)
                         .await
                         .map_err(|e| modkit_db::DbError::Other(anyhow::Error::new(e)))?;
 
@@ -257,14 +267,15 @@ impl<
     ) -> Result<MutationResult, MutationError> {
         info!(%chat_id, %request_id, "turn retry");
 
-        let scope = self
+        let chat_scope = self
             .enforcer
             .access_scope(ctx, &resources::CHAT, actions::RETRY_TURN, Some(chat_id))
-            .await?;
+            .await?
+            .ensure_owner(ctx.subject_id());
 
         let start = std::time::Instant::now();
         let result = self
-            .mutate_for_stream(ctx, scope, chat_id, request_id, None)
+            .mutate_for_stream(ctx, chat_scope, chat_id, request_id, None)
             .await;
 
         let ms = start.elapsed().as_secs_f64() * 1000.0;
@@ -285,14 +296,15 @@ impl<
     ) -> Result<MutationResult, MutationError> {
         info!(%chat_id, %request_id, "turn edit");
 
-        let scope = self
+        let chat_scope = self
             .enforcer
             .access_scope(ctx, &resources::CHAT, actions::EDIT_TURN, Some(chat_id))
-            .await?;
+            .await?
+            .ensure_owner(ctx.subject_id());
 
         let start = std::time::Instant::now();
         let result = self
-            .mutate_for_stream(ctx, scope, chat_id, request_id, Some(new_content))
+            .mutate_for_stream(ctx, chat_scope, chat_id, request_id, Some(new_content))
             .await;
 
         let ms = start.elapsed().as_secs_f64() * 1000.0;
@@ -322,11 +334,11 @@ impl<
         let scope_tx = chat_scope.clone();
         let ctx_clone = ctx.clone();
 
-        let (user_content, snapshot_boundary) = self
+        let (user_content, snapshot_boundary, chat_model) = self
             .db
             .transaction(|tx| {
                 Box::pin(async move {
-                    let (scope, target) = validate_mutation(
+                    let (scope, target, chat_model) = validate_mutation(
                         &*chat_repo,
                         &*turn_repo,
                         &scope_tx,
@@ -351,9 +363,13 @@ impl<
 
                     let user_content = override_content.unwrap_or(original_msg.content);
 
-                    // Soft-delete old turn with replacement link
+                    // Soft-delete old turn and its messages
                     turn_repo
                         .soft_delete(tx, &scope, target.id, Some(new_request_id))
+                        .await
+                        .map_err(|e| modkit_db::DbError::Other(anyhow::Error::new(e)))?;
+                    message_repo
+                        .soft_delete_by_request_id(tx, &scope, chat_id, request_id)
                         .await
                         .map_err(|e| modkit_db::DbError::Other(anyhow::Error::new(e)))?;
 
@@ -420,7 +436,7 @@ impl<
                         .await
                         .map_err(|e| modkit_db::DbError::Other(anyhow::Error::new(e)))?;
 
-                    Ok((user_content, boundary))
+                    Ok((user_content, boundary, chat_model))
                 })
             })
             .await
@@ -431,6 +447,7 @@ impl<
             new_turn_id,
             user_content,
             snapshot_boundary,
+            chat_model,
         })
     }
 }
@@ -447,15 +464,16 @@ async fn validate_mutation<CR: ChatRepository, TR: TurnRepository>(
     tx: &impl modkit_db::secure::DBRunner,
     chat_id: Uuid,
     request_id: Uuid,
-) -> Result<(AccessScope, TurnModel), MutationError> {
+) -> Result<(AccessScope, TurnModel, String), MutationError> {
     // 1. Verify chat exists with pre-computed authorization scope
-    chat_repo
+    let chat = chat_repo
         .get(tx, chat_scope, chat_id)
         .await
         .map_err(|e| MutationError::Internal {
             message: e.to_string(),
         })?
         .ok_or(MutationError::ChatNotFound { chat_id })?;
+    let chat_model = chat.model;
 
     let scope = chat_scope.tenant_only();
 
@@ -496,7 +514,7 @@ async fn validate_mutation<CR: ChatRepository, TR: TurnRepository>(
         _ => return Err(MutationError::NotLatestTurn),
     }
 
-    Ok((scope, target))
+    Ok((scope, target, chat_model))
 }
 
 // ════════════════════════════════════════════════════════════════════════════

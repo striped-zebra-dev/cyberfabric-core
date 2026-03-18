@@ -177,9 +177,19 @@ impl<
             .await?;
 
         let conn = self.db.conn().map_err(DomainError::from)?;
+
+        // Verify user owns the chat (ensure_owner for defence-in-depth).
+        let chat_scope = scope.ensure_owner(ctx.subject_id());
+        self.chat_repo
+            .get(&conn, &chat_scope, chat_id)
+            .await?
+            .ok_or_else(|| DomainError::not_found("Chat", chat_id))?;
+
+        // Attachment entity is no_owner — use tenant-only scope.
+        let att_scope = scope.tenant_only();
         let row = self
             .attachment_repo
-            .get(&conn, &scope, attachment_id)
+            .get(&conn, &att_scope, attachment_id)
             .await?
             .ok_or_else(|| DomainError::not_found("Attachment", attachment_id))?;
 
@@ -218,10 +228,18 @@ impl<
 
         let conn = self.db.conn().map_err(DomainError::from)?;
 
-        // Load row (including soft-deleted)
+        // Verify user owns the chat (ensure_owner for defence-in-depth).
+        let chat_scope = scope.ensure_owner(ctx.subject_id());
+        self.chat_repo
+            .get(&conn, &chat_scope, chat_id)
+            .await?
+            .ok_or_else(|| DomainError::not_found("Chat", chat_id))?;
+
+        // Load row (including soft-deleted); attachment is no_owner → tenant scope.
+        let att_scope = scope.tenant_only();
         let row = self
             .attachment_repo
-            .get(&conn, &scope, attachment_id)
+            .get(&conn, &att_scope, attachment_id)
             .await?
             .ok_or_else(|| DomainError::not_found("Attachment", attachment_id))?;
 
@@ -414,7 +432,46 @@ impl<
                 // Loser path: another upload already inserted the row.
                 self.poll_vector_store(scope, chat_id).await
             }
-            Err(e) => Err(e),
+            Err(e) => {
+                self.handle_vector_store_insert_race(&conn, scope, chat_id, e)
+                    .await
+            }
+        }
+    }
+
+    /// Defensive fallback for vector-store insert failures that may be
+    /// unrecognised unique-constraint violations (race with a concurrent upload).
+    /// If a row now exists, treat as a loser path; otherwise propagate the error.
+    async fn handle_vector_store_insert_race(
+        &self,
+        conn: &modkit_db::DbConn<'_>,
+        scope: &AccessScope,
+        chat_id: Uuid,
+        original_err: DomainError,
+    ) -> Result<String, DomainError> {
+        match self
+            .vector_store_repo
+            .find_by_chat(conn, scope, chat_id)
+            .await
+        {
+            Ok(Some(row)) if row.vector_store_id.is_some() => {
+                tracing::warn!(
+                    chat_id = %chat_id,
+                    error = %original_err,
+                    "vector store insert failed but row exists (concurrent insert); using existing"
+                );
+                #[allow(clippy::unwrap_used)]
+                Ok(row.vector_store_id.unwrap())
+            }
+            Ok(Some(_)) => {
+                tracing::warn!(
+                    chat_id = %chat_id,
+                    error = %original_err,
+                    "vector store insert failed but placeholder exists (concurrent insert); polling"
+                );
+                self.poll_vector_store(scope, chat_id).await
+            }
+            _ => Err(original_err),
         }
     }
 
@@ -487,14 +544,40 @@ impl<
         content_type: &str,
         file_bytes: Bytes,
     ) -> Result<AttachmentModel, DomainError> {
-        use crate::domain::mime_validation::{structured_filename, validate_mime};
+        use crate::domain::mime_validation::{
+            infer_mime_from_extension, normalize_mime, remap_csv_to_plain, structured_filename,
+            validate_mime,
+        };
         use crate::domain::repos::InsertAttachmentParams;
 
         let tenant_id = ctx.subject_tenant_id();
         let user_id = ctx.subject_id();
 
         // 1. MIME validate
-        let validated = validate_mime(content_type)?;
+        // Step A: infer from extension when client sends octet-stream
+        let effective_ct = if normalize_mime(content_type) == "application/octet-stream"
+            && let Some(inferred) = infer_mime_from_extension(&filename)
+        {
+            tracing::debug!(
+                original = %content_type,
+                inferred,
+                filename = %filename,
+                "MIME inferred from file extension (client sent octet-stream)"
+            );
+            inferred
+        } else {
+            content_type
+        };
+        // Step B: remap CSV → text/plain when allowed
+        let effective_ct = if self.rag_config.allow_csv_upload
+            && let Some(remapped) = remap_csv_to_plain(effective_ct)
+        {
+            tracing::debug!(original = %effective_ct, remapped, "CSV content-type remapped to text/plain");
+            remapped
+        } else {
+            effective_ct
+        };
+        let validated = validate_mime(effective_ct)?;
         let is_document = validated.kind == AttachmentKind::Document;
 
         #[allow(clippy::cast_possible_wrap)]
@@ -517,9 +600,10 @@ impl<
             .await?;
 
         let conn = self.db.conn().map_err(DomainError::from)?;
+        let chat_scope = scope.ensure_owner(ctx.subject_id());
         let chat = self
             .chat_repo
-            .get(&conn, &scope, chat_id)
+            .get(&conn, &chat_scope, chat_id)
             .await?
             .ok_or_else(|| DomainError::not_found("Chat", chat_id))?;
         let resolved = self
@@ -533,6 +617,7 @@ impl<
         let attachment_repo = Arc::clone(&self.attachment_repo);
         let chat_repo = Arc::clone(&self.chat_repo);
         let rag_config = self.rag_config.clone();
+        let chat_scope_tx = chat_scope.clone();
         let scope_tx = scope.clone();
         let kind_str = validated.kind.to_string();
         let insert_params = InsertAttachmentParams {
@@ -553,7 +638,7 @@ impl<
                 Box::pin(async move {
                     // Lock chat row to serialize concurrent uploads
                     let _chat = chat_repo
-                        .get_for_update(tx, &scope_tx, chat_id)
+                        .get_for_update(tx, &chat_scope_tx, chat_id)
                         .await
                         .map_err(|e| modkit_db::DbError::Other(anyhow::Error::new(e)))?
                         .ok_or_else(|| {

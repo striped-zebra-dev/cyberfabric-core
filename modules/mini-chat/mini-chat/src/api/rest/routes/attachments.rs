@@ -5,6 +5,8 @@ use modkit::api::operation_builder::OperationBuilder;
 use super::AiChatLicense;
 use crate::api::rest::handlers;
 
+const API_TAG: &str = "Mini Chat Attachments";
+
 pub(super) fn register_attachment_routes(
     mut router: Router,
     openapi: &dyn OpenApiRegistry,
@@ -14,7 +16,7 @@ pub(super) fn register_attachment_routes(
     router = OperationBuilder::post(format!("{prefix}/v1/chats/{{id}}/attachments"))
         .operation_id("mini_chat.upload_attachment")
         .summary("Upload an attachment to a chat")
-        .tag("attachments")
+        .tag(API_TAG)
         .authenticated()
         .require_license_features([&AiChatLicense])
         .path_param("id", "Chat UUID")
@@ -30,7 +32,7 @@ pub(super) fn register_attachment_routes(
     ))
     .operation_id("mini_chat.get_attachment")
     .summary("Get attachment metadata")
-    .tag("attachments")
+    .tag(API_TAG)
     .authenticated()
     .require_license_features([&AiChatLicense])
     .path_param("id", "Chat UUID")
@@ -46,7 +48,7 @@ pub(super) fn register_attachment_routes(
     ))
     .operation_id("mini_chat.delete_attachment")
     .summary("Delete an attachment")
-    .tag("attachments")
+    .tag(API_TAG)
     .authenticated()
     .require_license_features([&AiChatLicense])
     .path_param("id", "Chat UUID")

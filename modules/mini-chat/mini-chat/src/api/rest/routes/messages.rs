@@ -6,6 +6,8 @@ use modkit::api::operation_builder::OperationBuilder;
 use super::AiChatLicense;
 use crate::api::rest::{dto, handlers};
 
+const API_TAG: &str = "Mini Chat Messages";
+
 pub(super) fn register_message_routes(
     mut router: Router,
     openapi: &dyn OpenApiRegistry,
@@ -23,7 +25,7 @@ pub(super) fn register_message_routes(
     router = OperationBuilder::get(format!("{prefix}/v1/chats/{{id}}/messages"))
         .operation_id("mini_chat.list_messages")
         .summary("List messages in a chat")
-        .tag("messages")
+        .tag(API_TAG)
         .authenticated()
         .require_license_features([&AiChatLicense])
         .path_param("id", "Chat UUID")
@@ -47,7 +49,7 @@ pub(super) fn register_message_routes(
     router = OperationBuilder::post(format!("{prefix}/v1/chats/{{id}}/messages:stream"))
         .operation_id("mini_chat.stream_message")
         .summary("Send a message and stream the response via SSE")
-        .tag("messages")
+        .tag(API_TAG)
         .authenticated()
         .require_license_features([&AiChatLicense])
         .path_param("id", "Chat UUID")

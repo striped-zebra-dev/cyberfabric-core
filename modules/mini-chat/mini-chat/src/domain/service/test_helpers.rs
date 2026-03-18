@@ -186,7 +186,7 @@ impl ModelResolver for MockModelResolver {
             None => {
                 let default = catalog
                     .iter()
-                    .find(|m| m.preference.is_default && m.enabled)
+                    .find(|m| m.preference.as_ref().is_some_and(|p| p.is_default) && m.enabled)
                     .or_else(|| catalog.iter().find(|m| m.enabled));
                 match default {
                     Some(e) => Ok(ResolvedModel::from(e)),
@@ -403,10 +403,6 @@ pub fn test_catalog_entry(params: TestCatalogEntryParams) -> ModelCatalogEntry {
     use mini_chat_sdk::models::*;
     use time::OffsetDateTime;
 
-    let tier_str = match params.tier {
-        mini_chat_sdk::ModelTier::Premium => "premium",
-        mini_chat_sdk::ModelTier::Standard => "standard",
-    };
     let input_mult = params.input_tokens_credit_multiplier_micro as f64 / 1_000_000.0;
     let output_mult = params.output_tokens_credit_multiplier_micro as f64 / 1_000_000.0;
     let has_vision = params
@@ -434,9 +430,11 @@ pub fn test_catalog_entry(params: TestCatalogEntryParams) -> ModelCatalogEntry {
         multiplier_display: params.multiplier_display.clone(),
         estimation_budgets: EstimationBudgets::default(),
         max_retrieved_chunks_per_turn: 5,
+        max_tool_calls: 2,
         general_config: ModelGeneralConfig {
             config_type: String::new(),
-            tier: tier_str.to_owned(),
+            model_credential_id: Uuid::nil(),
+            credential_tenant_id: Uuid::nil(),
             available_from: OffsetDateTime::UNIX_EPOCH,
             max_file_size_mb: 25,
             api_params: ModelApiParams {
@@ -495,10 +493,10 @@ pub fn test_catalog_entry(params: TestCatalogEntryParams) -> ModelCatalogEntry {
                 speed_tokens_per_second: 100,
             },
         },
-        preference: ModelPreference {
+        preference: Some(ModelPreference {
             is_default: params.is_default,
             sort_order: 0,
-        },
+        }),
         system_prompt: String::new(),
         thread_summary_prompt: String::new(),
     }

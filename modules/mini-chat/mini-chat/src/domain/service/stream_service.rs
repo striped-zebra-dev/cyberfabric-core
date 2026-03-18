@@ -20,7 +20,7 @@ use crate::domain::repos::{
     MessageAttachmentRepository, MessageRepository, QuotaUsageRepository, SnapshotBoundary,
     ThreadSummaryRepository, TurnRepository, VectorStoreRepository,
 };
-use crate::domain::stream_events::{DoneData, ErrorData, StreamEvent, TurnStartedData};
+use crate::domain::stream_events::{DoneData, ErrorData, StreamEvent, StreamStartedData};
 use crate::infra::db::entity::chat_turn::{Model as TurnModel, TurnState};
 use crate::infra::llm::{
     ClientSseEvent, LlmMessage, LlmProvider, LlmProviderError, LlmRequestBuilder, LlmTool,
@@ -175,7 +175,7 @@ struct FinalizationCtx<TR: TurnRepository + 'static, MR: MessageRepository + 'st
     chat_id: Uuid,
     request_id: Uuid,
     user_id: Uuid,
-    /// Pre-generated assistant message ID, also sent in `DoneData`.
+    /// Pre-generated assistant message ID, sent in `StreamStartedData` (`stream_started` event).
     message_id: Uuid,
     // ── Quota/preflight fields (from PreflightDecision) ──
     effective_model: String,
@@ -196,6 +196,8 @@ struct FinalizationCtx<TR: TurnRepository + 'static, MR: MessageRepository + 'st
     provider_id: String,
     /// Metrics port for recording stream metrics in the spawned task.
     metrics: Arc<dyn MiniChatMetricsPort>,
+    /// Quota warnings provider for computing `quota_warnings` in the `done` event.
+    quota_warnings_provider: Arc<dyn crate::domain::service::quota_settler::QuotaWarningsProvider>,
 }
 
 impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static> FinalizationCtx<TR, MR> {
@@ -294,6 +296,8 @@ struct PreflightResult {
     system_prompt: String,
     context_window: u32,
     estimation_budgets: crate::config::EstimationBudgets,
+    max_retrieved_chunks_per_turn: u32,
+    max_tool_calls: u32,
 }
 
 /// Convert a `PreflightDecision` into a flat `PreflightResult` or a `StreamError`.
@@ -312,6 +316,8 @@ fn flatten_preflight(
             system_prompt,
             context_window,
             estimation_budgets,
+            max_retrieved_chunks_per_turn,
+            max_tool_calls,
             ..
         } => Ok(PreflightResult {
             effective_model,
@@ -326,6 +332,8 @@ fn flatten_preflight(
             system_prompt,
             context_window,
             estimation_budgets,
+            max_retrieved_chunks_per_turn,
+            max_tool_calls,
         }),
         PreflightDecision::Downgrade {
             effective_model,
@@ -339,6 +347,8 @@ fn flatten_preflight(
             system_prompt,
             context_window,
             estimation_budgets,
+            max_retrieved_chunks_per_turn,
+            max_tool_calls,
             ..
         } => Ok(PreflightResult {
             effective_model,
@@ -353,6 +363,8 @@ fn flatten_preflight(
             system_prompt,
             context_window,
             estimation_budgets,
+            max_retrieved_chunks_per_turn,
+            max_tool_calls,
         }),
         PreflightDecision::Reject {
             error_code,
@@ -524,10 +536,11 @@ impl<
         let user_id = ctx.subject_id();
 
         // ── Authorization ──
-        let scope = self
+        let chat_scope = self
             .enforcer
             .access_scope(&ctx, &resources::CHAT, actions::SEND_MESSAGE, Some(chat_id))
-            .await?;
+            .await?
+            .ensure_owner(ctx.subject_id());
 
         // Non-transactional connection for pre-stream checks (D6)
         let conn = self
@@ -539,12 +552,12 @@ impl<
 
         // ── Verify chat exists (scoped) ──
         self.chat_repo
-            .get(&conn, &scope, chat_id)
+            .get(&conn, &chat_scope, chat_id)
             .await
             .map_err(|e| StreamError::TurnCreationFailed { source: e })?
             .ok_or(StreamError::ChatNotFound { chat_id })?;
 
-        let scope = scope.tenant_only();
+        let scope = chat_scope.tenant_only();
 
         // ── Idempotency check (DESIGN §3.7 Check Priority Order) ──
         if let Some(existing_turn) = self
@@ -703,7 +716,7 @@ impl<
             }
         }
 
-        // Pre-generate assistant message ID (sent in DoneData and used in CAS)
+        // Pre-generate assistant message ID (sent in StreamStartedData and used in CAS)
         let message_id = Uuid::new_v4();
 
         let finalization_ctx = FinalizationCtx {
@@ -728,6 +741,8 @@ impl<
             period_starts,
             provider_id: provider_id.clone(),
             metrics: Arc::clone(&self.metrics),
+            quota_warnings_provider: Arc::clone(&self.quota)
+                as Arc<dyn crate::domain::service::quota_settler::QuotaWarningsProvider>,
         };
 
         // ── Context assembly ──
@@ -749,6 +764,8 @@ impl<
                 file_search_enabled,
                 &vector_store_ids,
                 None, // file_search_filters: wired by P4-6
+                self.streaming_config.web_search_context_size,
+                pf.max_retrieved_chunks_per_turn,
                 token_budget,
             )
             .await?;
@@ -767,14 +784,7 @@ impl<
             .replace("{model}", &provider_model_id);
         let proxy_path = format!("{}{api_path}", resolved_provider.upstream_alias);
 
-        // Emit turn_started before handing tx to the provider task (D3).
-        if tx
-            .send(StreamEvent::TurnStarted(TurnStartedData { request_id }))
-            .await
-            .is_err()
-        {
-            warn!(%request_id, "turn_started send failed (client disconnected before first event)");
-        }
+        emit_stream_started(&tx, request_id, message_id).await;
 
         Ok(spawn_provider_task(
             resolved_provider.adapter,
@@ -786,6 +796,7 @@ impl<
             model,
             provider_model_id,
             pf.max_output_tokens_applied.cast_unsigned(),
+            pf.max_tool_calls,
             self.quota.web_search_max_calls_per_message(),
             cancel,
             tx,
@@ -1023,6 +1034,8 @@ impl<
         file_search_enabled: bool,
         vector_store_ids: &[String],
         file_search_filters: Option<crate::domain::llm::FileSearchFilter>,
+        web_search_context_size: crate::domain::llm::WebSearchContextSize,
+        file_search_max_num_results: u32,
         token_budget: Option<super::context_assembly::TokenBudget>,
     ) -> Result<super::context_assembly::AssembledContext, StreamError> {
         let conn = self
@@ -1097,6 +1110,8 @@ impl<
             file_search_enabled,
             vector_store_ids,
             file_search_filters,
+            web_search_context_size,
+            file_search_max_num_results,
             token_budget,
         })
         .map_err(|e| StreamError::ContextBudgetExceeded {
@@ -1308,6 +1323,8 @@ impl<
             period_starts,
             provider_id: provider_id.clone(),
             metrics: Arc::clone(&self.metrics),
+            quota_warnings_provider: Arc::clone(&self.quota)
+                as Arc<dyn crate::domain::service::quota_settler::QuotaWarningsProvider>,
         };
 
         // ── Context assembly ──
@@ -1329,6 +1346,8 @@ impl<
                 file_search_enabled,
                 &vector_store_ids,
                 None, // file_search_filters: wired by P4-6
+                self.streaming_config.web_search_context_size,
+                pf.max_retrieved_chunks_per_turn,
                 token_budget,
             )
             .await?;
@@ -1345,14 +1364,7 @@ impl<
             .replace("{model}", &provider_model_id);
         let proxy_path = format!("{}{api_path}", resolved_provider.upstream_alias);
 
-        // Emit turn_started before handing tx to the provider task (D3).
-        if tx
-            .send(StreamEvent::TurnStarted(TurnStartedData { request_id }))
-            .await
-            .is_err()
-        {
-            warn!(%request_id, "turn_started send failed (client disconnected before first event)");
-        }
+        emit_stream_started(&tx, request_id, message_id).await;
 
         Ok(spawn_provider_task(
             resolved_provider.adapter,
@@ -1364,6 +1376,7 @@ impl<
             pf.effective_model,
             provider_model_id,
             pf.max_output_tokens_applied.cast_unsigned(),
+            pf.max_tool_calls,
             self.quota.web_search_max_calls_per_message(),
             cancel,
             tx,
@@ -1377,6 +1390,21 @@ impl<
 /// a [`StreamOutcome`]. After the stream ends, atomically finalizes the turn
 /// via `FinalizationService::finalize_turn_cas()` if a context is provided.
 ///
+/// Emit `stream_started` before handing `tx` to the provider task (D3).
+async fn emit_stream_started(tx: &mpsc::Sender<StreamEvent>, request_id: Uuid, message_id: Uuid) {
+    if tx
+        .send(StreamEvent::StreamStarted(StreamStartedData {
+            request_id,
+            message_id,
+            is_new_turn: true,
+        }))
+        .await
+        .is_err()
+    {
+        warn!(%request_id, "stream_started send failed (client disconnected before first event)");
+    }
+}
+
 /// All five terminal paths (provider done, incomplete, provider error,
 /// client disconnect, pre-stream error) route through `finalize_turn_cas()`.
 /// SSE terminal events (Done/Error) are emitted only after the CAS winner
@@ -1398,11 +1426,12 @@ fn spawn_provider_task<TR: TurnRepository + 'static, MR: MessageRepository + 'st
     model: String,
     provider_model_id: String,
     max_output_tokens: u32,
+    max_tool_calls: u32,
     web_search_max_calls: u32,
     cancel: CancellationToken,
     tx: mpsc::Sender<StreamEvent>,
     fin_ctx: Option<FinalizationCtx<TR, MR>>,
-    provider_file_id_map: std::collections::HashMap<String, Uuid>,
+    provider_file_id_map: std::collections::HashMap<String, crate::domain::llm::AttachmentRef>,
 ) -> tokio::task::JoinHandle<StreamOutcome> {
     let span = if let Some(ref fctx) = fin_ctx {
         tracing::info_span!(
@@ -1419,7 +1448,6 @@ fn spawn_provider_task<TR: TurnRepository + 'static, MR: MessageRepository + 'st
     tokio::spawn(async move {
         let stream_start = std::time::Instant::now();
         let mut first_token_time: Option<std::time::Duration> = None;
-        let msg_id_str = fin_ctx.as_ref().map(|p| p.message_id.to_string());
 
         // ── Metrics: stream started + active gauge ──
         // ActiveStreamGuard ensures decrement on every exit path (Drop-based).
@@ -1435,7 +1463,8 @@ fn spawn_provider_task<TR: TurnRepository + 'static, MR: MessageRepository + 'st
         // Build the LLM request using provider_model_id (the actual provider-facing name)
         let mut builder = LlmRequestBuilder::new(&provider_model_id)
             .messages(messages)
-            .max_output_tokens(u64::from(max_output_tokens));
+            .max_output_tokens(u64::from(max_output_tokens))
+            .max_tool_calls(max_tool_calls);
         if let Some(instructions) = system_instructions {
             builder = builder.system_instructions(instructions);
         }
@@ -1839,15 +1868,27 @@ fn spawn_provider_task<TR: TurnRepository + 'static, MR: MessageRepository + 'st
                                     ))
                                     .await;
                             }
+                            // Compute quota warnings post-commit (advisory, best-effort)
+                            let quota_warnings = match fctx
+                                .quota_warnings_provider
+                                .get_quota_warnings(&fctx.scope, fctx.tenant_id, fctx.user_id)
+                                .await
+                            {
+                                Ok(w) => Some(w),
+                                Err(e) => {
+                                    warn!(error = %e, "failed to compute quota_warnings");
+                                    None
+                                }
+                            };
                             let _ = tx
                                 .send(StreamEvent::Done(Box::new(DoneData {
-                                    message_id: msg_id_str.clone(),
                                     usage: Some(usage),
                                     effective_model: fctx.effective_model.clone(),
                                     selected_model: fctx.selected_model.clone(),
                                     quota_decision: fctx.quota_decision.clone(),
                                     downgrade_from: fctx.downgrade_from.clone(),
                                     downgrade_reason: fctx.downgrade_reason.clone(),
+                                    quota_warnings,
                                 })))
                                 .await;
                         }
@@ -1857,13 +1898,13 @@ fn spawn_provider_task<TR: TurnRepository + 'static, MR: MessageRepository + 'st
                             // Emit Done anyway so client isn't left hanging
                             let _ = tx
                                 .send(StreamEvent::Done(Box::new(DoneData {
-                                    message_id: msg_id_str.clone(),
                                     usage: Some(usage),
                                     effective_model: fctx.effective_model.clone(),
                                     selected_model: fctx.selected_model.clone(),
                                     quota_decision: "allow".into(),
                                     downgrade_from: None,
                                     downgrade_reason: None,
+                                    quota_warnings: None,
                                 })))
                                 .await;
                         }
@@ -1883,13 +1924,13 @@ fn spawn_provider_task<TR: TurnRepository + 'static, MR: MessageRepository + 'st
                     }
                     let _ = tx
                         .send(StreamEvent::Done(Box::new(DoneData {
-                            message_id: msg_id_str.clone(),
                             usage: Some(usage),
                             effective_model: model.clone(),
                             selected_model: model.clone(),
                             quota_decision: "allow".into(),
                             downgrade_from: None,
                             downgrade_reason: None,
+                            quota_warnings: None,
                         })))
                         .await;
                 }
@@ -1935,15 +1976,26 @@ fn spawn_provider_task<TR: TurnRepository + 'static, MR: MessageRepository + 'st
                     );
                     match fctx.finalization_svc.finalize_turn_cas(input).await {
                         Ok(outcome) if outcome.won_cas => {
+                            let quota_warnings = match fctx
+                                .quota_warnings_provider
+                                .get_quota_warnings(&fctx.scope, fctx.tenant_id, fctx.user_id)
+                                .await
+                            {
+                                Ok(w) => Some(w),
+                                Err(e) => {
+                                    warn!(error = %e, "failed to compute quota_warnings");
+                                    None
+                                }
+                            };
                             let _ = tx
                                 .send(StreamEvent::Done(Box::new(DoneData {
-                                    message_id: msg_id_str.clone(),
                                     usage: Some(usage),
                                     effective_model: fctx.effective_model.clone(),
                                     selected_model: fctx.selected_model.clone(),
                                     quota_decision: fctx.quota_decision.clone(),
                                     downgrade_from: fctx.downgrade_from.clone(),
                                     downgrade_reason: fctx.downgrade_reason.clone(),
+                                    quota_warnings,
                                 })))
                                 .await;
                         }
@@ -1952,13 +2004,13 @@ fn spawn_provider_task<TR: TurnRepository + 'static, MR: MessageRepository + 'st
                             warn!(error = %fe, "finalization failed on incomplete stream");
                             let _ = tx
                                 .send(StreamEvent::Done(Box::new(DoneData {
-                                    message_id: msg_id_str.clone(),
                                     usage: Some(usage),
                                     effective_model: fctx.effective_model.clone(),
                                     selected_model: fctx.selected_model.clone(),
                                     quota_decision: "allow".into(),
                                     downgrade_from: None,
                                     downgrade_reason: None,
+                                    quota_warnings: None,
                                 })))
                                 .await;
                         }
@@ -1966,13 +2018,13 @@ fn spawn_provider_task<TR: TurnRepository + 'static, MR: MessageRepository + 'st
                 } else {
                     let _ = tx
                         .send(StreamEvent::Done(Box::new(DoneData {
-                            message_id: msg_id_str.clone(),
                             usage: Some(usage),
                             effective_model: model.clone(),
                             selected_model: model.clone(),
                             quota_decision: "allow".into(),
                             downgrade_from: None,
                             downgrade_reason: None,
+                            quota_warnings: None,
                         })))
                         .await;
                 }
@@ -2087,6 +2139,23 @@ mod tests {
     use oagw_sdk::error::StreamingError;
 
     // ── Noop OutboxEnqueuer ──
+
+    #[allow(de0309_must_have_domain_model)]
+    struct NoopQuotaWarningsProvider;
+    #[async_trait::async_trait]
+    impl crate::domain::service::quota_settler::QuotaWarningsProvider for NoopQuotaWarningsProvider {
+        async fn get_quota_warnings(
+            &self,
+            _scope: &modkit_security::AccessScope,
+            _tenant_id: Uuid,
+            _user_id: Uuid,
+        ) -> Result<
+            Vec<crate::domain::stream_events::QuotaWarning>,
+            crate::domain::error::DomainError,
+        > {
+            Ok(Vec::new())
+        }
+    }
 
     #[allow(de0309_must_have_domain_model)]
     struct NoopOutboxEnqueuer;
@@ -2386,6 +2455,7 @@ mod tests {
             "test-model".into(),
             "test-model".into(),
             4096,
+            2, // max_tool_calls
             2, // web_search_max_calls
             cancel,
             tx,
@@ -2436,6 +2506,7 @@ mod tests {
             "test-model".into(),
             "test-model".into(),
             4096,
+            2, // max_tool_calls
             2, // web_search_max_calls
             cancel,
             tx,
@@ -2479,6 +2550,7 @@ mod tests {
             "test-model".into(),
             "test-model".into(),
             4096,
+            2, // max_tool_calls
             2, // web_search_max_calls
             cancel,
             tx,
@@ -2571,6 +2643,7 @@ mod tests {
             "test-model".into(),
             "test-model".into(),
             4096,
+            2, // max_tool_calls
             2, // web_search_max_calls
             cancel.clone(),
             tx,
@@ -3357,9 +3430,9 @@ mod tests {
             .await
             .expect("should start stream");
 
-        // Read the turn_started event, then the first delta
-        let started = rx.recv().await.expect("should get turn_started");
-        assert!(matches!(started, StreamEvent::TurnStarted(_)));
+        // Read the stream_started event, then the first delta
+        let started = rx.recv().await.expect("should get stream_started");
+        assert!(matches!(started, StreamEvent::StreamStarted(_)));
         let first = rx.recv().await.expect("should get delta");
         assert!(matches!(first, StreamEvent::Delta(_)));
 
@@ -3541,6 +3614,7 @@ mod tests {
             period_starts: Vec::new(),
             provider_id: "openai".to_owned(),
             metrics: Arc::new(crate::domain::ports::metrics::NoopMetrics),
+            quota_warnings_provider: Arc::new(NoopQuotaWarningsProvider),
         };
 
         let provider: Arc<dyn LlmProvider> = Arc::new(MockProvider::completed(&["Hello"]));
@@ -3557,6 +3631,7 @@ mod tests {
             "gpt-4o-mini".into(), // effective_model passed as the model param
             "gpt-4o-mini".into(),
             4096,
+            2, // max_tool_calls
             2, // web_search_max_calls
             cancel,
             tx,
@@ -3797,7 +3872,7 @@ mod tests {
         assert!(done.downgrade_from.is_none());
 
         // Verify turn was created with real quota fields (not placeholder 1_000_000)
-        let scope = AccessScope::allow_all().tenant_only();
+        let scope = AccessScope::allow_all();
         let conn = db.conn().unwrap();
         let turn_repo = TurnRepo;
         let turn = turn_repo
@@ -4028,6 +4103,7 @@ mod tests {
             "test-model".into(),
             "test-model".into(),
             4096,
+            2, // max_tool_calls
             2, // web_search_max_calls
             cancel,
             tx,
@@ -4072,6 +4148,7 @@ mod tests {
             "test-model".into(),
             "test-model".into(),
             4096,
+            2, // max_tool_calls
             2, // web_search_max_calls
             cancel,
             tx,
@@ -4126,6 +4203,7 @@ mod tests {
             "test-model".into(),
             "test-model".into(),
             4096,
+            2, // max_tool_calls
             2, // web_search_max_calls
             cancel,
             tx,
@@ -5406,9 +5484,9 @@ mod tests {
             .await
             .expect("should succeed");
 
-        // Wait for turn_started and first delta to arrive, then cancel
-        let started = rx.recv().await.expect("should get turn_started");
-        assert!(matches!(started, StreamEvent::TurnStarted(_)));
+        // Wait for stream_started and first delta to arrive, then cancel
+        let started = rx.recv().await.expect("should get stream_started");
+        assert!(matches!(started, StreamEvent::StreamStarted(_)));
         let ev = rx.recv().await.expect("should receive delta");
         assert!(
             matches!(ev, StreamEvent::Delta(_)),
