@@ -98,14 +98,12 @@ The system supports both **linear conversations** (traditional chat) and **non-l
 | `cpt-cf-chat-engine-adr-streaming-architecture` | HTTP chunked transfer for streaming responses |
 | `cpt-cf-chat-engine-adr-routing-layer` | Zero business logic routing layer |
 | `cpt-cf-chat-engine-adr-file-handling` | URL-based file references with external storage |
-| `cpt-cf-chat-engine-adr-webhook-protocol` | Synchronous HTTP webhook protocol for backend communication |
+| `cpt-cf-chat-engine-adr-http-client-protocol` | Synchronous HTTP webhook protocol for backend communication |
 | `cpt-cf-chat-engine-adr-http-client-protocol` | WebSocket client protocol for real-time delivery |
 | `cpt-cf-chat-engine-adr-webhook-event-types` | Typed webhook event categories for backend notifications |
 | `cpt-cf-chat-engine-adr-streaming-cancellation` | Client-initiated streaming cancellation with partial save |
 | `cpt-cf-chat-engine-adr-stateless-scaling` | Stateless instances for horizontal scaling |
-| `cpt-cf-chat-engine-adr-circuit-breaker` | Circuit breaker pattern per backend plugin |
 | `cpt-cf-chat-engine-adr-backpressure-handling` | Backpressure handling for streaming pipelines |
-| `cpt-cf-chat-engine-adr-timeout-configuration` | Per-session-type timeout configuration |
 | `cpt-cf-chat-engine-adr-message-variants` | Message variants with index and active flag |
 | `cpt-cf-chat-engine-adr-variant-indexing` | Variant indexing for navigation |
 | `cpt-cf-chat-engine-adr-message-recreation` | Recreation creates variants, branching creates children |
@@ -127,7 +125,7 @@ The system supports both **linear conversations** (traditional chat) and **non-l
 | `cpt-cf-chat-engine-nfr-response-time` | Stateless routing, async I/O | Direct plugin invocation without intermediate queuing; streaming starts immediately |
 | `cpt-cf-chat-engine-nfr-availability` | Stateless scaling | Horizontal scaling with no shared in-memory state; database is single point of persistence |
 | `cpt-cf-chat-engine-nfr-scalability` | Stateless architecture | Any instance can handle any session; load balancer distributes evenly |
-| `cpt-cf-chat-engine-nfr-streaming-performance` | HTTP chunked transfer | NDJSON streaming with backpressure; chunks forwarded as received from plugin |
+| `cpt-cf-chat-engine-nfr-streaming` | HTTP chunked transfer | NDJSON streaming with backpressure; chunks forwarded as received from plugin |
 | `cpt-cf-chat-engine-nfr-data-integrity` | ACID transactions | All state mutations wrapped in database transactions; message tree immutability enforced |
 
 ### 1.3 Architecture Layers
@@ -200,7 +198,7 @@ Chat Engine does not store file content. Clients must upload files to File Stora
 - [ ] `p1` - **ID**: `cpt-cf-chat-engine-constraint-sync-webhooks`
 
 <!-- fdd-id-content -->
-**ADRs**: `cpt-cf-chat-engine-adr-webhook-protocol`
+**ADRs**: `cpt-cf-chat-engine-adr-http-client-protocol`
 
 Webhook backends must respond synchronously (with streaming) over HTTP. Asynchronous/callback-based backends are not supported. This constraint simplifies error handling and keeps client connections open for streaming. Note: The client-to-Chat Engine protocol is independent of the webhook protocol, which remains HTTP-based.
 <!-- fdd-id-content -->
@@ -551,7 +549,7 @@ Message tree management: creation, persistence, parent validation, variant_index
 
 - [ ] `p1` - **ID**: `cpt-cf-chat-engine-component-webhook-integration`
 
-Plugin registry and trait dispatch: resolves `dyn ChatEngineBackendPlugin` by `plugin_instance_id`, invokes trait methods (`on_session_created`, `on_session_updated`, `on_message`, etc.), delegates all transport/auth/retry to the plugin implementation. The first-party `webhook-compat` plugin wraps legacy HTTP webhook backends. **ADRs**: `cpt-cf-chat-engine-adr-plugin-backend-integration`, `cpt-cf-chat-engine-adr-routing-layer`, `cpt-cf-chat-engine-adr-circuit-breaker`, `cpt-cf-chat-engine-adr-timeout-configuration`.
+Plugin registry and trait dispatch: resolves `dyn ChatEngineBackendPlugin` by `plugin_instance_id`, invokes trait methods (`on_session_created`, `on_session_updated`, `on_message`, etc.), delegates all transport/auth/retry to the plugin implementation. The first-party `webhook-compat` plugin wraps legacy HTTP webhook backends. **ADRs**: `cpt-cf-chat-engine-adr-plugin-backend-integration`, `cpt-cf-chat-engine-adr-routing-layer`.
 
 #### Response Streaming Module
 
@@ -1303,7 +1301,7 @@ Message tree traversal follows parent_message_id references. Active path is comp
 **ID**: `cpt-cf-chat-engine-design-context-circuit-breaker`
 
 <!-- fdd-id-content -->
-**ADRs**: `cpt-cf-chat-engine-adr-circuit-breaker`
+**ADRs**: `cpt-cf-chat-engine-adr-plugin-backend-integration`
 
 Circuit breaker pattern prevents cascade failures from slow/failing backend plugins. The circuit opens after reaching a configured failure threshold. Half-open state allows a single probe request to test recovery. Success closes circuit; failure reopens. Implemented per session_type_id.
 <!-- fdd-id-content -->
