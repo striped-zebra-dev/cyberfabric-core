@@ -295,7 +295,7 @@ impl AppConfig {
     pub fn load_layered(config_path: &PathBuf) -> Result<Self> {
         use figment::{
             Figment,
-            providers::{Env, Format, Serialized, Yaml},
+            providers::{Env, Format, Serialized},
         };
 
         // For layered loading, start from AppConfig::default() which provides logging
@@ -303,7 +303,7 @@ impl AppConfig {
         // tracing, modules_dir) remain None unless overridden by YAML/ENV.
         let figment = Figment::new()
             .merge(Serialized::defaults(AppConfig::default()))
-            .merge(Yaml::file(config_path))
+            .merge(StrictYaml::file(config_path))
             // Example: APP__SERVER__PORT=8087 maps to server.port
             .merge(Env::prefixed("APP__").split("__"));
 
@@ -416,6 +416,32 @@ pub struct CliArgs {
     pub mock: bool,
 }
 
+/// Parse YAML with duplicate-key rejection.
+fn strict_yaml_parse<T: serde::de::DeserializeOwned>(s: &str) -> Result<T, serde_saphyr::Error> {
+    let opts = serde_saphyr::Options {
+        duplicate_keys: serde_saphyr::DuplicateKeyPolicy::Error,
+        ..serde_saphyr::Options::default()
+    };
+    serde_saphyr::from_str_with_options(s, opts)
+}
+
+/// YAML [`Format`](figment::providers::Format) provider that rejects duplicate
+/// mapping keys instead of silently keeping the last value.
+///
+/// Drop-in replacement for figment's built-in `Yaml` — use
+/// `StrictYaml::file(path)` wherever you would use `Yaml::file(path)`.
+struct StrictYaml;
+
+impl figment::providers::Format for StrictYaml {
+    type Error = serde_saphyr::Error;
+
+    const NAME: &'static str = "YAML";
+
+    fn from_str<T: serde::de::DeserializeOwned>(s: &str) -> Result<T, Self::Error> {
+        strict_yaml_parse(s)
+    }
+}
+
 fn merge_module_files(
     bag: &mut HashMap<String, serde_json::Value>,
     dir: impl AsRef<Path>,
@@ -445,7 +471,8 @@ fn merge_module_files(
             .unwrap_or("")
             .to_owned();
         let raw = fs::read_to_string(&path)?;
-        let json: serde_json::Value = serde_saphyr::from_str(&raw)?;
+        let json: serde_json::Value = strict_yaml_parse(&raw)
+            .with_context(|| format!("failed to parse module file: {}", path.display()))?;
         bag.insert(name, json);
     }
     Ok(())
@@ -3003,6 +3030,97 @@ vendor: {}
 "#;
         let config: AppConfig = serde_saphyr::from_str(yaml).unwrap();
         assert!(config.vendor.is_empty());
+    }
+
+    // ========== Duplicate YAML key rejection tests ==========
+
+    #[test]
+    fn test_reject_duplicate_module_names() {
+        let tmp = tempdir().unwrap();
+        let cfg_path = tmp.path().join("cfg.yaml");
+        let yaml = r#"
+server:
+  home_dir: "~/.test_dup"
+modules:
+  module1:
+    config: {}
+  module2:
+    config: {}
+  module1:
+    config: {}
+"#;
+        fs::write(&cfg_path, yaml).unwrap();
+
+        let result = AppConfig::load_layered(&cfg_path);
+        assert!(result.is_err(), "duplicate module names should be rejected");
+        let msg = format!("{:?}", result.unwrap_err());
+        assert!(
+            msg.contains("duplicate") || msg.contains("Duplicate"),
+            "error should mention duplicates: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_reject_duplicate_keys_in_module_file() {
+        let tmp = tempdir().unwrap();
+        let modules_dir = tmp.path().join("modules.d");
+        fs::create_dir_all(&modules_dir).unwrap();
+
+        // Module file with duplicate "config:" key
+        let module_yaml = r#"
+config:
+  key1: "value1"
+config:
+  key2: "value2"
+"#;
+        fs::write(modules_dir.join("bad_module.yaml"), module_yaml).unwrap();
+
+        let cfg_yaml = format!(
+            r#"
+server:
+  home_dir: "~/.test_dup_modfile"
+modules_dir: "{}"
+"#,
+            modules_dir.display()
+        );
+        let cfg_path = tmp.path().join("cfg.yaml");
+        fs::write(&cfg_path, cfg_yaml).unwrap();
+
+        let result = AppConfig::load_layered(&cfg_path);
+        assert!(
+            result.is_err(),
+            "duplicate keys in a module file should be rejected"
+        );
+        let msg = format!("{:?}", result.unwrap_err());
+        assert!(
+            msg.contains("duplicate") || msg.contains("Duplicate"),
+            "error should mention duplicates: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_no_false_positive_on_unique_modules() {
+        let tmp = tempdir().unwrap();
+        let cfg_path = tmp.path().join("cfg.yaml");
+        let yaml = r#"
+server:
+  home_dir: "~/.test_ok"
+modules:
+  module1:
+    config: {}
+  module2:
+    config: {}
+  module3:
+    config: {}
+"#;
+        fs::write(&cfg_path, yaml).unwrap();
+
+        let result = AppConfig::load_layered(&cfg_path);
+        assert!(
+            result.is_ok(),
+            "unique module names should be accepted: {:?}",
+            result.unwrap_err()
+        );
     }
 }
 
