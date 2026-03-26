@@ -11,7 +11,8 @@ use oagw_sdk::{
     BurstConfig, CorsConfig, CorsHttpMethod, CreateRouteRequest, CreateUpstreamRequest, Endpoint,
     HeadersConfig, HttpMatch, HttpMethod, MatchRules, PassthroughMode, PathSuffixMode,
     PluginBinding, PluginsConfig, RateLimitAlgorithm, RateLimitConfig, RateLimitScope,
-    RateLimitStrategy, RequestHeaderRules, Scheme, Server, SharingMode, SustainedRate, Window,
+    RateLimitStrategy, RequestHeaderRules, ResponseHeaderRules, Scheme, Server, SharingMode,
+    SustainedRate, Window,
 };
 use serde_json::json;
 
@@ -3503,5 +3504,88 @@ async fn cors_multiple_specific_origins() {
             .get("access-control-allow-origin")
             .is_none(),
         "non-matching origin should not get CORS headers"
+    );
+}
+
+// Response header rules: set/add/remove operations applied to upstream response.
+#[tokio::test]
+async fn proxy_response_header_rules_applied() {
+    let h = AppHarness::builder().build().await;
+    let ctx = h.security_context().clone();
+
+    let upstream = h
+        .facade()
+        .create_upstream(
+            ctx.clone(),
+            CreateUpstreamRequest::builder(
+                Server {
+                    endpoints: vec![Endpoint {
+                        scheme: Scheme::Http,
+                        host: "127.0.0.1".into(),
+                        port: h.mock_port(),
+                    }],
+                },
+                "gts.x.core.oagw.protocol.v1~x.core.oagw.http.v1",
+            )
+            .alias("resp-rules-test")
+            .headers(HeadersConfig {
+                request: None,
+                response: Some(ResponseHeaderRules {
+                    set: [("x-custom-safe".into(), "overwritten".into())]
+                        .into_iter()
+                        .collect(),
+                    add: [("x-injected".into(), "added-value".into())]
+                        .into_iter()
+                        .collect(),
+                    remove: vec!["x-remove-target".into()],
+                }),
+            })
+            .build(),
+        )
+        .await
+        .unwrap();
+
+    h.facade()
+        .create_route(
+            ctx.clone(),
+            CreateRouteRequest::builder(
+                upstream.id,
+                MatchRules {
+                    http: Some(HttpMatch {
+                        methods: vec![HttpMethod::Get],
+                        path: "/response-headers".into(),
+                        query_allowlist: vec![],
+                        path_suffix_mode: PathSuffixMode::Append,
+                    }),
+                    grpc: None,
+                },
+            )
+            .build(),
+        )
+        .await
+        .unwrap();
+
+    let req = http::Request::builder()
+        .method(Method::GET)
+        .uri("/resp-rules-test/response-headers")
+        .body(Body::Empty)
+        .unwrap();
+    let response = h.facade().proxy_request(ctx.clone(), req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let headers = response.headers();
+
+    // "set" overwrites existing header from upstream mock.
+    assert_eq!(
+        headers.get("x-custom-safe").unwrap(),
+        "overwritten",
+        "response set rule should overwrite upstream header"
+    );
+
+    // "add" injects a new header.
+    assert_eq!(
+        headers.get("x-injected").unwrap(),
+        "added-value",
+        "response add rule should inject header"
     );
 }
