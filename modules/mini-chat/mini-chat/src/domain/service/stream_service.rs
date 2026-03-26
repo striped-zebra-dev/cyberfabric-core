@@ -18,9 +18,9 @@ use crate::domain::models::ResolvedModel;
 use crate::domain::ports::MiniChatMetricsPort;
 use crate::domain::ports::metric_labels::{decision, period, stage, trigger};
 use crate::domain::repos::{
-    AttachmentRepository, ChatRepository, CreateTurnParams, InsertUserMessageParams,
-    MessageAttachmentRepository, MessageRepository, QuotaUsageRepository, SnapshotBoundary,
-    ThreadSummaryRepository, TurnRepository, VectorStoreRepository,
+    AttachmentRepository, CasTerminalParams, ChatRepository, CreateTurnParams,
+    InsertUserMessageParams, MessageAttachmentRepository, MessageRepository, QuotaUsageRepository,
+    SnapshotBoundary, ThreadSummaryRepository, TurnRepository, VectorStoreRepository,
 };
 use crate::domain::stream_events::{DoneData, ErrorData, StreamEvent, StreamStartedData};
 use crate::infra::db::entity::chat_turn::{Model as TurnModel, TurnState};
@@ -170,6 +170,11 @@ pub enum StreamError {
         required_tokens: u64,
         available_tokens: u64,
     },
+    /// User message content exceeds the model's maximum input token limit.
+    InputTooLong {
+        estimated_tokens: u64,
+        max_input_tokens: u32,
+    },
 }
 
 impl From<authz_resolver_sdk::EnforcerError> for StreamError {
@@ -282,6 +287,36 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static> Finalization
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+// Input token validation
+// ════════════════════════════════════════════════════════════════════════════
+
+/// Estimate text-only tokens for `content` and return `Err(InputTooLong)` if
+/// the estimate exceeds the model's `max_input_tokens`.
+///
+/// Surcharges (images, tools, web search, code interpreter) are intentionally
+/// excluded: this is a fast pre-flight guard on the raw message text, not a
+/// full context budget check.
+fn check_input_token_limit(content: &str, pf: &PreflightResult) -> Result<(), StreamError> {
+    let estimate = super::token_estimator::estimate_tokens(
+        &super::token_estimator::EstimationInput {
+            utf8_bytes: content.len() as u64,
+            num_images: 0,
+            tools_enabled: false,
+            web_search_enabled: false,
+            code_interpreter_enabled: false,
+        },
+        &pf.estimation_budgets,
+    );
+    if estimate.estimated_input_tokens > u64::from(pf.max_input_tokens) {
+        return Err(StreamError::InputTooLong {
+            estimated_tokens: estimate.estimated_input_tokens,
+            max_input_tokens: pf.max_input_tokens,
+        });
+    }
+    Ok(())
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 // Error normalization
 // ════════════════════════════════════════════════════════════════════════════
 
@@ -342,6 +377,7 @@ struct PreflightResult {
     downgrade_reason: Option<String>,
     system_prompt: String,
     context_window: u32,
+    max_input_tokens: u32,
     estimation_budgets: crate::config::EstimationBudgets,
     max_retrieved_chunks_per_turn: u32,
     max_tool_calls: u32,
@@ -364,6 +400,7 @@ fn flatten_preflight(
             minimal_generation_floor_applied,
             system_prompt,
             context_window,
+            max_input_tokens,
             estimation_budgets,
             max_retrieved_chunks_per_turn,
             max_tool_calls,
@@ -382,6 +419,7 @@ fn flatten_preflight(
             downgrade_reason: None,
             system_prompt,
             context_window,
+            max_input_tokens,
             estimation_budgets,
             max_retrieved_chunks_per_turn,
             max_tool_calls,
@@ -399,6 +437,7 @@ fn flatten_preflight(
             downgrade_reason,
             system_prompt,
             context_window,
+            max_input_tokens,
             estimation_budgets,
             max_retrieved_chunks_per_turn,
             max_tool_calls,
@@ -417,6 +456,7 @@ fn flatten_preflight(
             downgrade_reason: Some(downgrade_reason.as_str().to_owned()),
             system_prompt,
             context_window,
+            max_input_tokens,
             estimation_budgets,
             max_retrieved_chunks_per_turn,
             max_tool_calls,
@@ -734,6 +774,9 @@ impl<
         self.record_preflight_metrics(&computed, &selected_model);
 
         let pf = flatten_preflight(computed.decision.clone())?;
+
+        // ── Input token limit check ──
+        check_input_token_limit(&content, &pf)?;
 
         // ── Post-preflight image guards (kill switches + vision capability) ──
         if num_images > 0 {
@@ -1348,6 +1391,45 @@ impl<
         self.record_preflight_metrics(&computed, &selected_model);
 
         let pf = flatten_preflight(computed.decision.clone())?;
+
+        // ── Input token limit check ──
+        // The turn is already committed (created by mutate_for_stream). If the
+        // message exceeds max_input_tokens we mark it Failed before returning so
+        // the turn does not stay stuck in Running state.
+        if let Err(too_long) = check_input_token_limit(&content, &pf) {
+            let detail = match &too_long {
+                StreamError::InputTooLong {
+                    estimated_tokens,
+                    max_input_tokens,
+                } => Some(format!(
+                    "estimated {estimated_tokens} tokens, limit {max_input_tokens}"
+                )),
+                _ => None,
+            };
+            if let Err(e) = self
+                .turn_repo
+                .cas_update_state(
+                    &conn,
+                    &scope,
+                    CasTerminalParams {
+                        turn_id,
+                        state: TurnState::Failed,
+                        error_code: Some("input_too_long".to_owned()),
+                        error_detail: detail,
+                        assistant_message_id: None,
+                        provider_response_id: None,
+                    },
+                )
+                .await
+            {
+                warn!(
+                    %turn_id,
+                    error = %e,
+                    "failed to mark turn as Failed after InputTooLong check"
+                );
+            }
+            return Err(too_long);
+        }
 
         // Metrics: estimated tokens (only on allow/downgrade)
         #[allow(clippy::cast_precision_loss)]
@@ -3610,6 +3692,270 @@ mod tests {
         let outcome = handle.await.expect("task should complete");
         assert_eq!(outcome.terminal, StreamTerminal::Completed);
         assert_eq!(outcome.accumulated_text, "Hello");
+    }
+
+    // ── flatten_preflight unit tests ──
+
+    /// `max_input_tokens` from `PreflightDecision::Allow` reaches `PreflightResult`.
+    #[test]
+    fn flatten_preflight_allow_propagates_max_input_tokens() {
+        use crate::config::EstimationBudgets;
+        use crate::domain::model::quota::PreflightDecision;
+
+        let decision = PreflightDecision::Allow {
+            effective_model: "m".to_owned(),
+            effective_provider_model_id: "m-provider".to_owned(),
+            reserve_tokens: 100,
+            max_output_tokens_applied: 1024,
+            reserved_credits_micro: 0,
+            policy_version_applied: 1,
+            minimal_generation_floor_applied: 50,
+            system_prompt: String::new(),
+            context_window: 128_000,
+            max_input_tokens: 65_536,
+            estimation_budgets: EstimationBudgets::default(),
+            max_retrieved_chunks_per_turn: 5,
+            max_tool_calls: 2,
+            tool_support: mini_chat_sdk::ModelToolSupport {
+                web_search: false,
+                file_search: false,
+                image_generation: false,
+                code_interpreter: false,
+                computer_use: false,
+                mcp: false,
+            },
+        };
+
+        let result = flatten_preflight(decision).expect("Allow should produce Ok");
+        assert_eq!(result.max_input_tokens, 65_536);
+        assert_eq!(result.context_window, 128_000);
+    }
+
+    /// `max_input_tokens` from `PreflightDecision::Downgrade` reaches `PreflightResult`.
+    #[test]
+    fn flatten_preflight_downgrade_propagates_max_input_tokens() {
+        use crate::config::EstimationBudgets;
+        use crate::domain::model::quota::{DowngradeReason, PreflightDecision};
+
+        let decision = PreflightDecision::Downgrade {
+            effective_model: "m-mini".to_owned(),
+            effective_provider_model_id: "m-mini-provider".to_owned(),
+            reserve_tokens: 50,
+            max_output_tokens_applied: 512,
+            reserved_credits_micro: 0,
+            policy_version_applied: 1,
+            minimal_generation_floor_applied: 50,
+            downgrade_from: "m".to_owned(),
+            downgrade_reason: DowngradeReason::PremiumQuotaExhausted,
+            system_prompt: String::new(),
+            context_window: 32_000,
+            max_input_tokens: 16_000,
+            estimation_budgets: EstimationBudgets::default(),
+            max_retrieved_chunks_per_turn: 5,
+            max_tool_calls: 2,
+            tool_support: mini_chat_sdk::ModelToolSupport {
+                web_search: false,
+                file_search: false,
+                image_generation: false,
+                code_interpreter: false,
+                computer_use: false,
+                mcp: false,
+            },
+        };
+
+        let result = flatten_preflight(decision).expect("Downgrade should produce Ok");
+        assert_eq!(result.max_input_tokens, 16_000);
+        assert_eq!(result.context_window, 32_000);
+        assert_eq!(result.quota_decision, "downgrade");
+    }
+
+    // ── InputTooLong integration tests ──
+
+    /// Build a `StreamService` whose model catalog sets `max_input_tokens` to
+    /// `context_window` (the invariant in `test_catalog_entry`). Using a small
+    /// `context_window` lets tests trigger `InputTooLong` with short content.
+    fn build_stream_service_with_context_window(
+        db: Arc<DbProvider>,
+        provider: Arc<dyn LlmProvider>,
+        context_window: u32,
+    ) -> StreamService<
+        TurnRepo,
+        MsgRepo,
+        OrmQuotaUsageRepo,
+        OrmChatRepo,
+        MockThreadSummaryRepo,
+        OrmAttachmentRepo,
+        OrmVectorStoreRepo,
+        OrmMessageAttachmentRepo,
+    > {
+        use crate::domain::service::finalization_service::FinalizationService;
+        use crate::domain::service::quota_settler::QuotaSettler;
+
+        #[allow(de0309_must_have_domain_model)]
+        struct MockQuotaSettler;
+        #[async_trait::async_trait]
+        impl QuotaSettler for MockQuotaSettler {
+            async fn settle_in_tx(
+                &self,
+                _tx: &modkit_db::secure::DbTx<'_>,
+                _scope: &AccessScope,
+                _input: crate::domain::model::quota::SettlementInput,
+            ) -> Result<
+                crate::domain::model::quota::SettlementOutcome,
+                crate::domain::error::DomainError,
+            > {
+                Ok(crate::domain::model::quota::SettlementOutcome {
+                    settlement_method: crate::domain::model::quota::SettlementMethod::Released,
+                    actual_credits_micro: 0,
+                    charged_tokens: 0,
+                    overshoot_capped: false,
+                })
+            }
+        }
+
+        let metrics: Arc<dyn crate::domain::ports::MiniChatMetricsPort> =
+            Arc::new(crate::domain::ports::metrics::NoopMetrics);
+        let provider_resolver = Arc::new(ProviderResolver::single_provider(provider));
+        let turn_repo = Arc::new(TurnRepo);
+        let message_repo = Arc::new(MsgRepo::new(modkit_db::odata::LimitCfg {
+            default: 20,
+            max: 100,
+        }));
+        let finalization = Arc::new(FinalizationService::new(
+            Arc::clone(&db),
+            Arc::clone(&turn_repo),
+            Arc::clone(&message_repo),
+            Arc::new(MockQuotaSettler) as Arc<dyn QuotaSettler>,
+            Arc::new(NoopOutboxEnqueuer) as Arc<dyn crate::domain::repos::OutboxEnqueuer>,
+            Arc::clone(&metrics),
+        ));
+
+        // Keep max_output_tokens well below context_window so preflight maths
+        // don't overflow or reject before our InputTooLong check runs.
+        #[allow(clippy::integer_division)]
+        let max_output_tokens = (context_window / 4).max(1);
+        let quota_svc = Arc::new(crate::domain::service::QuotaService::new(
+            Arc::clone(&db),
+            Arc::new(OrmQuotaUsageRepo),
+            Arc::new(MockPolicySnapshotProvider::new(
+                mini_chat_sdk::PolicySnapshot {
+                    user_id: Uuid::nil(),
+                    policy_version: 1,
+                    model_catalog: vec![test_catalog_entry(TestCatalogEntryParams {
+                        model_id: "gpt-5.2".to_owned(),
+                        provider_model_id: "gpt-5.2-2025-03-26".to_owned(),
+                        display_name: "GPT 5.2".to_owned(),
+                        tier: mini_chat_sdk::ModelTier::Standard,
+                        enabled: true,
+                        is_default: true,
+                        input_tokens_credit_multiplier_micro: 1_000_000,
+                        output_tokens_credit_multiplier_micro: 1_000_000,
+                        multimodal_capabilities: vec![],
+                        context_window,
+                        max_output_tokens,
+                        description: String::new(),
+                        provider_display_name: String::new(),
+                        multiplier_display: "1x".to_owned(),
+                        provider_id: "openai".to_owned(),
+                    })],
+                    kill_switches: mini_chat_sdk::KillSwitches::default(),
+                },
+            )),
+            Arc::new(MockUserLimitsProvider::new(mini_chat_sdk::UserLimits {
+                user_id: Uuid::nil(),
+                policy_version: 1,
+                standard: mini_chat_sdk::TierLimits {
+                    limit_daily_credits_micro: 100_000_000,
+                    limit_monthly_credits_micro: 1_000_000_000,
+                },
+                premium: mini_chat_sdk::TierLimits {
+                    limit_daily_credits_micro: 50_000_000,
+                    limit_monthly_credits_micro: 500_000_000,
+                },
+            })),
+            crate::config::EstimationBudgets::default(),
+            crate::config::QuotaConfig {
+                overshoot_tolerance_factor: 1.10,
+                ..crate::config::QuotaConfig::default()
+            },
+        ));
+
+        StreamService::new(
+            db,
+            turn_repo,
+            message_repo,
+            Arc::new(OrmChatRepo::new(modkit_db::odata::LimitCfg {
+                default: 20,
+                max: 100,
+            })),
+            mock_enforcer(),
+            provider_resolver,
+            crate::config::StreamingConfig::default(),
+            finalization,
+            quota_svc,
+            mock_thread_summary_repo(),
+            Arc::new(crate::infra::db::repo::attachment_repo::AttachmentRepository),
+            Arc::new(crate::infra::db::repo::vector_store_repo::VectorStoreRepository),
+            Arc::new(crate::infra::db::repo::message_attachment_repo::MessageAttachmentRepository),
+            crate::config::ContextConfig::default(),
+            crate::config::RagConfig::default(),
+            metrics,
+        )
+    }
+
+    /// A message whose estimated token count exceeds `max_input_tokens` is
+    /// rejected with `StreamError::InputTooLong` before any DB write.
+    ///
+    /// Setup: model catalog has `context_window = max_input_tokens = 500`.
+    /// Content: 1500 ASCII bytes → ~523 estimated tokens (default budgets).
+    ///   ceil(1500/4) + 100 = 475; with 10 % margin: ceil(475 * 110 / 100) = 523.
+    ///   523 > 500 → `InputTooLong`.
+    #[tokio::test]
+    async fn run_stream_input_too_long_returns_error() {
+        let db = mock_db_provider(inmem_db().await);
+        let tenant_id = Uuid::new_v4();
+        let user_id = Uuid::new_v4();
+        let chat_id = Uuid::new_v4();
+        insert_test_chat(&db, tenant_id, user_id, chat_id).await;
+
+        let provider: Arc<dyn LlmProvider> = Arc::new(MockProvider::completed(&[]));
+        let svc = build_stream_service_with_context_window(db, provider, 500);
+
+        let ctx = test_security_ctx_with_id(tenant_id, user_id);
+        let (tx, _rx) = mpsc::channel(32);
+        let cancel = CancellationToken::new();
+
+        // 1500 bytes → estimated ~523 tokens, which exceeds max_input_tokens=500
+        let long_content = "a".repeat(1500);
+
+        let err = svc
+            .run_stream(
+                ctx,
+                chat_id,
+                Uuid::new_v4(),
+                long_content,
+                test_resolved_model(),
+                false,
+                Vec::new(),
+                cancel,
+                tx,
+            )
+            .await
+            .expect_err("should be InputTooLong");
+
+        match err {
+            StreamError::InputTooLong {
+                estimated_tokens,
+                max_input_tokens,
+            } => {
+                assert_eq!(max_input_tokens, 500);
+                assert!(
+                    estimated_tokens > u64::from(max_input_tokens),
+                    "estimated {estimated_tokens} should exceed limit {max_input_tokens}"
+                );
+            }
+            other => panic!("expected InputTooLong, got: {other:?}"),
+        }
     }
 
     // ── Integration tests (8.2, 8.3) ──
@@ -6275,5 +6621,79 @@ mod tests {
         assert_eq!(metrics.active_streams_inc.load(Ordering::Relaxed), 1);
         assert_eq!(metrics.active_streams_dec.load(Ordering::Relaxed), 1);
         assert_eq!(metrics.stream_total_latency_ms.load(Ordering::Relaxed), 1);
+    }
+
+    /// `run_stream_for_mutation` returns `InputTooLong` for oversized content
+    /// and marks the already-committed turn as `Failed` so it does not stay
+    /// stuck in `Running` state.
+    ///
+    /// Setup: model catalog has `context_window = max_input_tokens = 500`.
+    /// Content: 1500 ASCII bytes → ~523 estimated tokens > 500 → `InputTooLong`.
+    #[tokio::test]
+    async fn run_stream_for_mutation_input_too_long_marks_turn_failed() {
+        let db = mock_db_provider(inmem_db().await);
+        let tenant_id = Uuid::new_v4();
+        let user_id = Uuid::new_v4();
+        let chat_id = Uuid::new_v4();
+        let request_id = Uuid::new_v4();
+        let turn_id = Uuid::new_v4();
+        insert_test_chat(&db, tenant_id, user_id, chat_id).await;
+        insert_running_turn(&db, tenant_id, user_id, chat_id, request_id, turn_id).await;
+
+        let provider: Arc<dyn LlmProvider> = Arc::new(MockProvider::completed(&[]));
+        let svc = build_stream_service_with_context_window(db.clone(), provider, 500);
+
+        let ctx = test_security_ctx_with_id(tenant_id, user_id);
+        let (tx, _rx) = mpsc::channel(32);
+        let cancel = CancellationToken::new();
+
+        let err = svc
+            .run_stream_for_mutation(
+                ctx,
+                chat_id,
+                request_id,
+                turn_id,
+                "a".repeat(1500),
+                test_resolved_model(),
+                false,
+                None,
+                cancel,
+                tx,
+            )
+            .await
+            .expect_err("should be InputTooLong");
+
+        match err {
+            StreamError::InputTooLong {
+                estimated_tokens,
+                max_input_tokens,
+            } => {
+                assert_eq!(max_input_tokens, 500);
+                assert!(
+                    estimated_tokens > u64::from(max_input_tokens),
+                    "estimated {estimated_tokens} should exceed limit {max_input_tokens}"
+                );
+            }
+            other => panic!("expected InputTooLong, got: {other:?}"),
+        }
+
+        // The pre-committed turn must be marked Failed, not left in Running.
+        let conn = db.conn().unwrap();
+        let scope = AccessScope::allow_all();
+        let turn = TurnRepo
+            .find_by_chat_and_request_id(&conn, &scope, chat_id, request_id)
+            .await
+            .expect("DB query should succeed")
+            .expect("turn must exist");
+        assert_eq!(
+            turn.state,
+            TurnState::Failed,
+            "turn should be marked Failed after InputTooLong"
+        );
+        assert_eq!(
+            turn.error_code.as_deref(),
+            Some("input_too_long"),
+            "error_code should be set to input_too_long"
+        );
     }
 }
