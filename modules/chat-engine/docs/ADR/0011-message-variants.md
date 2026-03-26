@@ -24,6 +24,8 @@
 
 **Status**: accepted
 
+**Review**: Revisit if variant storage grows beyond expected bounds
+
 **ID**: `cpt-cf-chat-engine-adr-message-variants`
 
 ## Context and Problem Statement
@@ -66,21 +68,39 @@ Chosen option: "variant_index + is_active flags", because it provides determinis
 
 ### Confirmation
 
-Confirmed via design review and alignment with DESIGN.md implementation.
+Confirmed when the unique constraint on (session_id, parent_message_id, variant_index) is enforced and is_active flags correctly track the selected variant per parent.
 
 ## Pros and Cons of the Options
 
 ### Option 1: variant_index + is_active flags
 
-See "Considered Options" and "Consequences" above for trade-off analysis.
+* Good, because variants live in the same messages table (no joins needed for queries)
+* Good, because deterministic ordering via 0-based integer index (0, 1, 2, ...)
+* Good, because unique constraint (session_id, parent_message_id, variant_index) prevents duplicates
+* Good, because is_active flag enables straightforward active-path tracking per session
+* Bad, because variant_index must be calculated via MAX query on each new variant creation
+* Bad, because changing the active variant requires two UPDATEs (deactivate old, activate new)
+* Bad, because deleting variants leaves gaps in the index sequence (0, 1, 3)
 
 ### Option 2: Separate variants table
 
-See "Considered Options" and "Consequences" above for trade-off analysis.
+* Good, because clean separation of concerns (messages and variants are distinct entities)
+* Good, because variant metadata (ordering, active flag) is isolated in its own schema
+* Good, because deleting all variants of a message is a simple table-scoped operation
+* Bad, because querying a message with its variants requires a JOIN, adding latency
+* Bad, because two tables must be kept in sync (insert message + insert variant row)
+* Bad, because increases schema complexity and migration surface area
+* Bad, because variant count queries require cross-table aggregation
 
 ### Option 3: Version field with timestamps
 
-See "Considered Options" and "Consequences" above for trade-off analysis.
+* Good, because no explicit index calculation needed (timestamp assigned automatically)
+* Good, because natural chronological ordering reflects creation order
+* Good, because simple schema (single timestamp field, no separate active flag needed if latest wins)
+* Bad, because timestamp precision collisions are possible under concurrent regeneration
+* Bad, because ordering is non-deterministic if clock skew occurs across instances
+* Bad, because position display ("2 of 5") requires sorting and counting rather than simple index math
+* Bad, because "latest wins" semantics prevent users from selecting a non-latest variant as active
 
 ## Related Design Elements
 

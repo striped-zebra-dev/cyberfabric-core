@@ -27,6 +27,8 @@ Updated:  2026-03-06 by Constructor Tech
 
 **Status**: accepted
 
+**Review**: Revisit if reaction types expand beyond simple emoji
+
 **ID**: `cpt-cf-chat-engine-adr-message-reactions`
 
 ## Context and Problem Statement
@@ -68,7 +70,7 @@ Chosen option: "Separate reaction table with UPSERT and fire-and-forget webhook"
 
 ### Confirmation
 
-Confirmed via design review and alignment with DESIGN.md implementation.
+Confirmed when the message_reactions table with composite PK (message_id, user_id) supports idempotent UPSERT for like/dislike and fire-and-forget webhook notification on reaction changes.
 
 ## Technical Design
 
@@ -124,15 +126,13 @@ See "Considered Options" and "Consequences" above for trade-off analysis.
 * `cpt-cf-chat-engine-actor-backend-plugin` - Receives reaction events for analytics and side effects
 
 **Requirements**:
-* cpt-cf-chat-engine-fr-message-reactions - Users can like/dislike messages
-* cpt-cf-chat-engine-fr-reaction-change - Users can change or remove their reaction
-* cpt-cf-chat-engine-nfr-reaction-idempotency - Multiple identical requests produce same result
+* `cpt-cf-chat-engine-fr-message-feedback` - Users can like/dislike messages, change or remove their reaction
 * `cpt-cf-chat-engine-nfr-data-integrity` - Composite PK enforces one reaction per user per message
 
 **Design Elements**:
 * `cpt-cf-chat-engine-design-entity-message-reaction` - Reaction entity with composite key
-* cpt-cf-chat-engine-api-http-reaction - HTTP endpoint POST /messages/{id}/reaction
-* cpt-cf-chat-engine-webhook-message-reaction - Webhook event message.reaction
+* `cpt-cf-chat-engine-dbtable-reactions` - Database table message_reactions with composite PK
+* `cpt-cf-chat-engine-component-message-reactions` - Message reactions component
 * `cpt-cf-chat-engine-principle-immutable-tree` - Reactions don't modify messages
 * Sequence diagrams: S14 (Add Message Reaction), S15 (Remove Message with Reactions)
 

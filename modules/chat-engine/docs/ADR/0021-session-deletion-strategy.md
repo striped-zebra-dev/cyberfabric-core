@@ -24,6 +24,8 @@ Updated:  2026-03-10 by Constructor Tech
 
 **Status**: accepted
 
+**Review**: Revisit if regulatory requirements mandate different retention strategies
+
 **ID**: `cpt-cf-chat-engine-adr-session-deletion-strategy`
 
 ## Context and Problem Statement
@@ -132,5 +134,5 @@ Keep soft-deleted sessions indefinitely; never hard-delete.
 * `cpt-cf-chat-engine-dbtable-sessions` — lifecycle_state, deleted_at, scheduled_hard_delete_at columns
 
 **Related ADRs**:
-* `cpt-cf-chat-engine-adr-message-tree-structure` — Messages inherit lifecycle state from parent session (cascade)
-* `cpt-cf-chat-engine-adr-webhook-event-types` — Webhook events for lifecycle transitions (session.soft_deleted, session.hard_deleted, session.restored)
+* ADR-0001 (Message Tree Structure, `cpt-cf-chat-engine-adr-message-tree-structure`) — Messages inherit lifecycle state from parent session (cascade)
+* ADR-0007 (Webhook Event Schema, `cpt-cf-chat-engine-adr-webhook-event-types`) — Webhook events for lifecycle transitions (session.soft_deleted, session.hard_deleted, session.restored)

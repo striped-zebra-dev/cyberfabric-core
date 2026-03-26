@@ -23,6 +23,8 @@ Updated:  2026-03-06 by Constructor Tech
 
 **Status**: accepted
 
+**Review**: Revisit if metadata query patterns require fixed-schema columns
+
 **ID**: `cpt-cf-chat-engine-adr-session-metadata`
 
 ## Context and Problem Statement
@@ -67,21 +69,45 @@ Chosen option: "JSONB metadata column", because it enables schema-free extensibi
 
 ### Confirmation
 
-Confirmed via design review and alignment with DESIGN.md implementation.
+Confirmed when session metadata is stored as a JSONB column with a GIN index and validated against registered GTS schemas at the application boundary.
 
 ## Pros and Cons of the Options
 
 ### Option 1: JSONB metadata column
 
-See "Considered Options" and "Consequences" above for trade-off analysis.
+Single JSONB field on the sessions table storing arbitrary key-value pairs.
+
+* Good, because new metadata fields require zero schema migrations
+* Good, because PostgreSQL GIN indexes enable efficient queries on JSONB content (tags, title)
+* Good, because sparse data is storage-efficient (only present fields consume space)
+* Good, because JSON operators (`->>`, `@>`, `?`) provide flexible query patterns
+* Bad, because no database-level schema enforcement (typos like "titel" go undetected)
+* Bad, because metadata structure is not self-documenting without external schema definitions
+* Bad, because complex analytical queries on JSONB are less efficient than on normalized columns
 
 ### Option 2: Fixed columns
 
-See "Considered Options" and "Consequences" above for trade-off analysis.
+Add dedicated columns (title, tags, summary, etc.) directly to the sessions table.
+
+* Good, because database enforces types and constraints (NOT NULL, length limits) per column
+* Good, because schema is self-documenting — column names and types visible in DDL
+* Good, because queries on fixed columns are straightforward and well-optimized by the planner
+* Bad, because every new metadata field requires a schema migration and deployment
+* Bad, because sparse data wastes storage (NULL columns still occupy row overhead)
+* Bad, because tightly couples application-specific fields to the core sessions schema
+* Bad, because high migration frequency as requirements evolve across different integrations
 
 ### Option 3: Metadata table
 
-See "Considered Options" and "Consequences" above for trade-off analysis.
+Separate key-value table (session_id FK, key, value) for storing metadata entries.
+
+* Good, because fully normalized — each metadata entry is a distinct row with its own constraints
+* Good, because adding new metadata keys requires no schema changes
+* Good, because individual key-value pairs can have row-level access control or audit trails
+* Bad, because queries spanning multiple keys require multiple JOINs or pivot logic
+* Bad, because retrieving full metadata for a session requires aggregation (N rows per session)
+* Bad, because value column must use a generic type (TEXT), losing type safety for integers, booleans, arrays
+* Bad, because higher storage overhead per entry compared to a single JSONB column
 
 ## Related Design Elements
 

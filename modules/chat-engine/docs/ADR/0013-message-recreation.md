@@ -23,6 +23,8 @@ Updated:  2026-03-06 by Constructor Tech
 
 **Status**: accepted
 
+**Review**: Revisit if message recreation needs to preserve metadata
+
 **ID**: `cpt-cf-chat-engine-adr-message-recreation`
 
 ## Context and Problem Statement
@@ -63,7 +65,7 @@ Chosen option: "Recreation = variant (sibling), Branch = child", because it pres
 
 ### Confirmation
 
-Confirmed via design review and alignment with DESIGN.md implementation.
+Confirmed when recreation produces a sibling message with the same parent_message_id and incremented variant_index, while branching produces a child message with a new parent_message_id.
 
 ## Pros and Cons of the Options
 

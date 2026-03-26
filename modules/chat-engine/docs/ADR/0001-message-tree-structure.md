@@ -24,11 +24,13 @@
 
 **Status**: accepted
 
+**Review**: Revisit if message storage model changes or graph databases are considered.
+
 **ID**: `cpt-cf-chat-engine-adr-message-tree-structure`
 
 ## Context and Problem Statement
 
-Chat Engine needs to support conversation branching, message regeneration, and variant exploration while maintaining referential integrity and enabling safe concurrent message creation. How should messages be structured to enable these capabilities without introducing data inconsistencies or race conditions?
+Chat Engine needs to support conversation branching, message regeneration, and variant exploration while maintaining referential integrity and enabling safe concurrent message creation. How should messages be structured to enable these capabilities without introducing data inconsistencies or race conditions? Out of scope: message content storage format, metadata schema, and attachment handling (covered by separate ADRs).
 
 ## Decision Drivers
 

@@ -23,6 +23,8 @@ Updated:  2026-03-06 by Constructor Tech
 
 **Status**: accepted
 
+**Review**: Revisit if branching depth causes performance issues
+
 **ID**: `cpt-cf-chat-engine-adr-branching-strategy`
 
 ## Context and Problem Statement
@@ -66,7 +68,7 @@ Chosen option: "Parent reference with history truncation", because it preserves 
 
 ### Confirmation
 
-Confirmed via design review and alignment with DESIGN.md implementation.
+Confirmed when branching from any historical message creates a child with the specified parent_message_id and the backend receives only the history up to that branch point.
 
 ## Pros and Cons of the Options
 

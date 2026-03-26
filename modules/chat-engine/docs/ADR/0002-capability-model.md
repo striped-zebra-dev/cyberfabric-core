@@ -22,6 +22,8 @@ Updated:  2026-03-06 by Constructor Tech
 
 **Status**: accepted
 
+**Review**: Revisit if capability model needs to support runtime extension.
+
 **ID**: `cpt-cf-chat-engine-adr-capability-model`
 
 ## Context and Problem Statement

@@ -23,6 +23,8 @@ Updated:  2026-03-06 by Constructor Tech
 
 **Status**: accepted
 
+**Review**: Revisit if stateful session affinity is needed
+
 **ID**: `cpt-cf-chat-engine-adr-stateless-scaling`
 
 ## Context and Problem Statement
@@ -64,21 +66,39 @@ Chosen option: "Stateless instances with database state", because it enables sim
 
 ### Confirmation
 
-Confirmed via design review and alignment with DESIGN.md implementation.
+Confirmed when all Chat Engine instances are stateless pods behind a load balancer with no session affinity, and any instance can serve any request by reading state from PostgreSQL.
 
 ## Pros and Cons of the Options
 
 ### Option 1: Stateless instances with database state
 
-See "Considered Options" and "Consequences" above for trade-off analysis.
+* Good, because any instance can handle any request without session affinity
+* Good, because horizontal scaling is trivial (add pods, no state migration needed)
+* Good, because instance failures are transparent to clients (no connection state lost)
+* Good, because Kubernetes-native deployment with simple auto-scaling on CPU/memory
+* Bad, because every request requires database queries with no in-memory shortcut
+* Bad, because database becomes the scaling bottleneck under high write throughput
+* Bad, because no request coalescing or local caching optimizations possible
 
 ### Option 2: Stateful instances with sticky sessions
 
-See "Considered Options" and "Consequences" above for trade-off analysis.
+* Good, because session data is local to the instance, enabling fast in-memory reads
+* Good, because no database query needed for cached session state, reducing latency
+* Good, because request coalescing and local optimizations are straightforward
+* Bad, because sticky sessions require load balancer session affinity configuration
+* Bad, because instance failure loses all in-memory session state, requiring recovery
+* Bad, because scaling down requires session draining and state migration
+* Bad, because uneven load distribution when sessions cluster on specific instances
 
 ### Option 3: Redis cache layer
 
-See "Considered Options" and "Consequences" above for trade-off analysis.
+* Good, because read-heavy workloads benefit from sub-millisecond cache lookups
+* Good, because cache reduces database load, raising the effective throughput ceiling
+* Good, because instances remain stateless while still gaining in-memory speed
+* Bad, because introduces an additional infrastructure component (Redis cluster) to operate
+* Bad, because cache invalidation adds complexity (stale reads, consistency windows)
+* Bad, because Redis itself becomes a potential single point of failure without clustering
+* Bad, because dual-write to cache and database increases code complexity and failure modes
 
 ## Related Design Elements
 
@@ -92,9 +112,8 @@ See "Considered Options" and "Consequences" above for trade-off analysis.
 * `cpt-cf-chat-engine-nfr-response-time` - Routing latency < 100ms despite database queries
 
 **Design Elements**:
-* cpt-cf-chat-engine-topology-cloud - Kubernetes deployment with 3+ replicas
 * `cpt-cf-chat-engine-constraint-single-database` - Database provides shared state
-* All components designed as stateless services
+* Kubernetes deployment with 3+ stateless replicas behind a load balancer
 
 **Related ADRs**:
 * ADR-0009 (Stateless Horizontal Scaling with Database State) - Database provides all persistent state

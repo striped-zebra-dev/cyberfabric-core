@@ -40,13 +40,9 @@ Updated:  2026-03-06 by Constructor Tech
 
 ### 1.1 Purpose
 
-**Purpose**: Chat Engine is a Gateway module (CyberFabric ModKit) that manages session lifecycle and message routing between clients and Backend Plugin modules.
+**Purpose**: Chat Engine is a Gateway module (CyberFabric ModKit) that manages session lifecycle and message routing between clients and Backend Plugin modules. It provides a unified interface for building conversational applications by abstracting session management, message history persistence, and flexible message processing — allowing application developers to focus on user experiences and backend plugin developers to focus on message processing logic.
 
-Chat Engine provides a unified interface for building conversational applications by abstracting session management, message history persistence, and flexible message processing. The system acts as an intermediary layer that handles the complexity of session state, message tree structures, and backend integration, allowing application developers to focus on building user experiences and backend plugin developers to focus on message processing logic.
-
-The core value proposition is enabling flexible, stateful conversation management with support for advanced features like message regeneration and conversation branching. By decoupling the conversation infrastructure from processing logic, Chat Engine enables rapid experimentation with different backend implementations and conversation patterns without requiring changes to client applications.
-
-The system supports various conversation patterns including traditional linear chat and branching conversations with variant exploration. This flexibility enables use cases ranging from automated assistants to human-in-the-loop support systems.
+The core value proposition is enabling flexible, stateful conversation management with support for advanced features like message regeneration, conversation branching, and variant exploration. By decoupling conversation infrastructure from processing logic, Chat Engine enables rapid experimentation with different backend implementations and conversation patterns — supporting use cases from automated assistants to human-in-the-loop support systems — without requiring changes to client applications.
 
 **Target Users**:
 - **Application Developers** - Build chat applications using Chat Engine as backend infrastructure for session and message management
@@ -65,11 +61,14 @@ The system supports various conversation patterns including traditional linear c
 ### 1.3 Goals (Business Outcomes)
 
 **Success Criteria**:
-- Message routing latency < 100ms (p95) excluding backend processing time
-- 99.9% uptime for session management operations
-- Support for 10,000 concurrent sessions per instance
-- Zero message loss during backend failures
-- First message response time < 200ms from session creation
+
+> Baseline: N/A (greenfield system — no prior system to compare)
+
+- Message routing latency < 100ms (p95) excluding backend processing time — at production launch
+- 99.9% uptime for session management operations — within 3 months of GA
+- Support for 10,000 concurrent sessions per instance — at production launch
+- Zero message loss during backend failures — at production launch
+- First message response time < 200ms from session creation — at production launch
 
 **Capabilities**:
 - Session lifecycle management (create, delete, retrieve)
@@ -245,20 +244,14 @@ The system **MUST** forward user messages to backend plugin with full session co
 - [ ] `p1` - **ID**: `cpt-cf-chat-engine-fr-attach-files`
 
 <!-- fdd-id-content -->
-The system **MUST** support file references in messages. Clients upload files to File Storage Service, obtain file UUIDs (stable identifiers), and include these UUIDs in message payloads. The system stores UUIDs in message records and forwards them to backend plugins as part of message context. File handling is enabled only if session capabilities allow it.
+The system **MUST** support file attachments in messages. Clients reference previously uploaded files by stable identifiers and include them in message payloads. The system persists file references in message records and forwards them to backend plugins as part of message context. File handling is enabled only if session capabilities allow it.
 
-**File Upload Workflow:**
-1. Client calls File Storage Service upload endpoint
-2. File Storage returns UUID as file identifier
-3. Client includes UUID in message send request (file_ids array, max 10 files)
-4. Chat Engine stores UUIDs in message record
-5. Webhook backends receive UUIDs and fetch files from File Storage as needed
+**Constraints**:
+- The system **MUST** enforce a maximum number of file attachments per message (configurable per session type)
+- File access control is delegated to the File Storage Service
+- Backend plugins are responsible for retrieving file content from File Storage as needed
 
-**File Access Control:**
-- UUIDs are stable identifiers that do not expire
-- File Storage Service controls access via separate authentication
-- Webhook backends must have credentials for File Storage API
-- Clients retrieve files by requesting temporary signed URLs from File Storage
+> **Note**: File upload workflow, identifier format, and access control mechanics are specified in [DESIGN.md](./DESIGN.md).
 
 **Actors**: `cpt-cf-chat-engine-actor-client`, `cpt-cf-chat-engine-actor-file-storage`
 <!-- fdd-id-content -->
@@ -342,198 +335,12 @@ The system **MAY** generate shareable links for sessions. Recipients can view se
 <!-- fdd-id-content -->
 The system **SHOULD** support session summarization if enabled by session type capabilities. Summary generation is triggered automatically or on demand and can be handled by the backend plugin or a dedicated summarization service. The summary is stored as session metadata.
 
-**Actors**: `cpt-cf-chat-engine-actor-client`, `cpt-cf-chat-engine-actor-backend-plugin`
-<!-- fdd-id-content -->
-
-#### FR-016: Conversation Memory Management Strategies
-
-- [ ] `p2` - **ID**: `cpt-cf-chat-engine-fr-conversation-memory`
-
-<!-- fdd-id-content -->
-The system **SHOULD** provide guidance and capabilities to support conversation memory management strategies for handling long-running sessions that exceed backend processing capacity limits. Backend plugins can implement various strategies to manage context depth while preserving conversation quality.
-
-**Memory Management Strategies**:
-1. **Full History** (default) - Send complete message history (suitable for short conversations)
-2. **Sliding Window** - Keep last N messages (predictable context depth)
-3. **Summarization + Recent** - Summarize old messages, keep recent ones verbatim
-4. **Importance Filtering** - Keep semantically important messages, filter filler
-5. **Hierarchical Summarization** - Multi-level summaries for very long conversations
-6. **Visibility Flags** - Use `is_hidden_from_backend` to exclude messages from context
-
-**System Capabilities Supporting Strategies**:
-- Session Summary (FR-011) - Backend can request conversation summaries
-- Message Visibility Flags - Mark messages as `is_hidden_from_backend=true` to exclude from context
-- Branching (FR-006) - Create new conversation path with truncated history
-- Message Tree Navigation - Backends can traverse history to implement custom strategies
-- Session Metadata - Store strategy configuration and state (e.g., last summarization point)
-
-**Backend Responsibilities**:
-- Choose appropriate strategy based on session type and conversation length
-- Implement context depth management and history filtering logic
-- Handle summarization or filtering logic
-- Store strategy state in session metadata if needed
-- Monitor context depth and adjust strategy dynamically
-
-**Strategy Selection Guidelines**:
-- **<50 messages**: Full History (default)
-- **50-200 messages**: Sliding Window or Visibility Flags
-- **200-1000 messages**: Summarization + Recent Messages
-- **1000+ messages**: Hierarchical Summarization or Importance Filtering
-- **Backend context limits**: Adjust strategy based on backend processing capacity
-
-**Trade-offs**:
-- **Full History**: High fidelity but expensive for long conversations
-- **Sliding Window**: Predictable costs but loses older context
-- **Summarization**: Balanced approach but adds summarization overhead
-- **Importance Filtering**: Optimal quality but complex to implement
-
-**Actors**: `cpt-cf-chat-engine-actor-backend-plugin`
-<!-- fdd-id-content -->
-
-#### FR-017: Individual Message Deletion
-
-- [ ] `p1` - **ID**: `cpt-cf-chat-engine-fr-delete-message`
-
-<!-- fdd-id-content -->
-The system **MUST** support deletion of individual messages within a session. When a message is deleted, all associated reactions are cascade-deleted automatically to maintain referential integrity. The system validates ownership (authenticated user must own the message) before deletion and notifies the backend plugin of the deletion event.
-
-**Deletion Behavior**:
-- **Hard delete only**: Messages are permanently removed (no soft delete for individual messages)
-- **Cascade delete reactions**: All reactions associated with the message are automatically deleted
-- **Ownership validation**: Only the message owner (authenticated user) can delete their messages
-- **Webhook notification**: Backend receives message_deleted event with message_id and timestamp
-- **Error handling**: Returns 403 Forbidden if user doesn't own message, 404 if message not found
-
-**Use Cases**:
-- User wants to remove a message they regret sending
-- User wants to clean up test messages or mistakes
-- User wants to remove sensitive information accidentally shared
-
-**Constraints**:
-- Cannot delete messages that are parent to other messages (would break conversation tree)
-- Cannot delete assistant messages (only user messages can be deleted by users)
-- Deletion is permanent and cannot be undone
+**Acceptance criteria**:
+- Summary is stored in session metadata and retrievable via session GET endpoint
+- Summary generation is rejected when session type capabilities do not include summarization
+- On-demand summary request returns updated summary within the NFR response time targets
 
 **Actors**: `cpt-cf-chat-engine-actor-client`, `cpt-cf-chat-engine-actor-backend-plugin`
-<!-- fdd-id-content -->
-
-#### FR-018: Per-Message Feedback
-
-- [ ] `p2` - **ID**: `cpt-cf-chat-engine-fr-message-feedback`
-
-<!-- fdd-id-content -->
-The system **SHOULD** support per-message feedback in the form of like/dislike reactions and optional text comments. Feedback enables quality monitoring, response quality evaluation, and user satisfaction tracking. Each message can have at most one reaction per user, with reaction changes (like → dislike) replacing the previous reaction. The system stores feedback metadata and optionally forwards it to backend plugins for analytics.
-
-**Reaction Types**:
-- **like**: Positive feedback (thumbs up)
-- **dislike**: Negative feedback (thumbs down)
-- **none**: Remove existing reaction
-
-**Behavioral Rules**:
-- Each message can have at most one reaction per user
-- Reaction changes (like → dislike) replace the previous reaction
-- Optional text comment supported per reaction (bounded length)
-- Reactions are tied to authenticated users (not anonymous)
-
-**Webhook Integration**:
-- Backends receive `message_feedback` events when reactions are added/changed
-- Events include message_id, reaction_type, comment, user_id, timestamp
-- Backends can use feedback for backend optimization, quality metrics, A/B testing
-
-**Privacy & Data Handling**:
-- Feedback is tied to authenticated user (not anonymous)
-- Comments are stored encrypted if they contain sensitive information
-- Feedback can be queried by client for display or exported with session data
-
-**Capability Gating**: Enabled if session type supports feedback capability
-
-**Actors**: `cpt-cf-chat-engine-actor-client`, `cpt-cf-chat-engine-actor-backend-plugin`
-<!-- fdd-id-content -->
-
-#### FR-019: Context Overflow Strategies
-
-- [ ] `p2` - **ID**: `cpt-cf-chat-engine-fr-context-overflow`
-
-<!-- fdd-id-content -->
-The system **SHOULD** provide explicit support for handling context overflow when message history exceeds backend processing capacity. Chat Engine provides primitives and metadata to enable backend plugins to implement various overflow strategies. The system does not enforce a specific strategy but provides the mechanisms for backends to implement their chosen approach.
-
-**Supported Strategy Primitives**:
-
-1. **Sliding Window**: Keep only the most recent N messages to bound context size
-2. **Hard Stop**: Reject new messages when the session exceeds a configured message count threshold
-3. **Drop-Middle**: Retain the beginning and end of the conversation, dropping the middle portion
-4. **Summarization**: Use `cpt-cf-chat-engine-fr-session-summary` to compress older messages into a summary that is included instead of verbatim history
-5. **Message Visibility Flags**: Mark individual messages with `is_hidden_from_backend` to exclude them from context sent to backends
-
-**System Support**:
-- Session metadata exposes estimated message count and processing metrics for backend decision-making
-- Session metadata stores strategy configuration and state between messages
-- Message tree navigation supports arbitrary history traversal by backends
-- `cpt-cf-chat-engine-fr-session-summary` provides summarization capability
-
-**Default Strategy**: Full History (send all messages until overflow, then error)
-
-**Backend Selection Guidelines**:
-- **Short sessions (<50 msgs)**: Full History
-- **Medium sessions (50-200 msgs)**: Sliding Window
-- **Long sessions (200-1000 msgs)**: Summarization + Recent
-- **Very long sessions (1000+ msgs)**: Hierarchical Summarization or Drop-Middle
-
-**Strategy Trade-offs**:
-- **Full History**: Highest fidelity, expensive for long conversations
-- **Sliding Window**: Predictable costs, loses context over time
-- **Summarization**: Balanced approach, adds latency for summary generation
-- **Drop-Middle**: Preserves key context, may lose important middle details
-- **Hard Stop**: Simplest, worst UX (forces session restart)
-
-**Capability Gating**: Strategy configuration exposed via session capabilities
-
-**Actors**: `cpt-cf-chat-engine-actor-backend-plugin`
-<!-- fdd-id-content -->
-
-#### FR-020: Message Retention & Cleanup Policies
-
-- [ ] `p2` - **ID**: `cpt-cf-chat-engine-fr-message-retention`
-
-<!-- fdd-id-content -->
-The system **SHOULD** support message-level retention policies that automatically clean up old messages while preserving session structure. Unlike session deletion (FR-014), message retention policies allow selective message cleanup to optimize storage costs while keeping sessions accessible. Cleanup operations preserve message tree integrity and notify backend plugins.
-
-**Message Retention Behavior**:
-- **Age-based cleanup**: Delete messages older than N days
-- **Count-based cleanup**: Keep only last N messages per session
-- **Selective cleanup**: Remove non-active conversation branches (unused variants)
-- **Tree-aware deletion**: Preserve parent messages required for tree structure
-- **Webhook notification**: Backend receives `messages_cleaned` event with deleted message IDs
-
-**Retention Policy Configuration** (per session type):
-- `message_retention_days`: Auto-delete messages older than N days (default: null/unlimited)
-- `max_messages_per_session`: Keep only last N messages (default: null/unlimited)
-- `cleanup_inactive_branches`: Remove unused message variants (default: false)
-- `preserve_favorited`: Keep messages marked with feedback reactions (default: true)
-
-**Cleanup Execution**:
-- Automated job runs daily to enforce retention policies
-- Cleanup preserves active conversation path (marked by is_active=true)
-- Parent messages required for tree structure are never deleted (even if old)
-- Webhook backends notified asynchronously after cleanup completes
-
-**Use Cases**:
-- Reduce storage costs for long-running sessions with thousands of messages
-- Comply with data minimization regulations (GDPR, CCPA)
-- Clean up experimental branches that users never navigate to
-- Archive old conversations while keeping recent context accessible
-
-**Constraints**:
-- Cannot delete messages that are parents to active messages (breaks tree)
-- Cannot delete messages with pending operations or incomplete streaming
-- Cleanup respects session lifecycle state (no cleanup on soft_deleted sessions)
-
-**Integration with Session Retention**:
-- Session retention (FR-014e) operates at session level (all-or-nothing)
-- Message retention operates within active sessions (selective cleanup)
-- When session is deleted, all messages are deleted (session takes precedence)
-
-**Actors**: `cpt-cf-chat-engine-actor-system`, `cpt-cf-chat-engine-actor-backend-plugin`
 <!-- fdd-id-content -->
 
 #### FR-012: Search Session History
@@ -623,36 +430,218 @@ The system **MAY** support archiving inactive sessions to optimize database perf
 <!-- fdd-id-content -->
 The system **SHOULD** support configurable retention policies that automatically manage session lifecycle based on age and inactivity. Retention policies enable automated data lifecycle management while balancing storage costs and compliance requirements. Policies are configured per session type and control automatic archival of inactive sessions, automatic hard deletion of soft-deleted sessions after grace period, and optional immediate deletion for compliance scenarios. The system processes retention policies periodically and notifies backend plugins of all lifecycle transitions.
 
-**Actors**: `cpt-cf-chat-engine-actor-system`, Admin
+**Actors**: `cpt-cf-chat-engine-actor-system`, `cpt-cf-chat-engine-actor-tenant-admin`
 <!-- fdd-id-content -->
 
-#### FR-015: WebSocket Protocol Support
+#### FR-016: Conversation Memory Management Strategies
 
-- [ ] `p2` - **ID**: `cpt-cf-chat-engine-fr-websocket-protocol`
+- [ ] `p2` - **ID**: `cpt-cf-chat-engine-fr-conversation-memory`
 
 <!-- fdd-id-content -->
-The system **SHOULD** support WebSocket protocol as an alternative to HTTP streaming for client-server communication. Clients can connect via WebSocket and perform all operations (session management, message sending, streaming responses) over a persistent connection instead of HTTP REST endpoints.
+The system **SHOULD** provide guidance and capabilities to support conversation memory management strategies for handling long-running sessions that exceed backend processing capacity limits. Backend plugins can implement various strategies to manage context depth while preserving conversation quality.
 
-**Protocol Features**:
-- Persistent bidirectional connection using WebSocket (RFC 6455)
-- JSON message framing for commands and NDJSON for streaming chunks
-- Connection lifecycle management (authenticate, heartbeat, reconnect)
-- All HTTP REST operations available via WebSocket commands
-- Graceful degradation to HTTP if WebSocket unavailable
+**Memory Management Strategies**:
+1. **Full History** (default) - Send complete message history (suitable for short conversations)
+2. **Sliding Window** - Keep last N messages (predictable context depth)
+3. **Summarization + Recent** - Summarize old messages, keep recent ones verbatim
+4. **Importance Filtering** - Keep semantically important messages, filter filler
+5. **Hierarchical Summarization** - Multi-level summaries for very long conversations
+6. **Visibility Flags** - Use `is_hidden_from_backend` to exclude messages from context
 
-**Use Cases**:
-- Clients preferring WebSocket client libraries
-- Lower latency for rapid message exchanges
-- Future bidirectional features (typing indicators, presence, notifications)
-- Mobile apps with persistent connections
+**System Capabilities Supporting Strategies**:
+- Session Summary (FR-011) - Backend can request conversation summaries
+- Message Visibility Flags - Mark messages as `is_hidden_from_backend=true` to exclude from context
+- Branching (FR-006) - Create new conversation path with truncated history
+- Message Tree Navigation - Backends can traverse history to implement custom strategies
+- Session Metadata - Store strategy configuration and state (e.g., last summarization point)
+
+**Backend Responsibilities**:
+- Choose appropriate strategy based on session type and conversation length
+- Implement context depth management and history filtering logic
+- Handle summarization or filtering logic
+- Store strategy state in session metadata if needed
+- Monitor context depth and adjust strategy dynamically
+
+**Strategy Selection Guidelines**:
+- **<50 messages**: Full History (default)
+- **50-200 messages**: Sliding Window or Visibility Flags
+- **200-1000 messages**: Summarization + Recent Messages
+- **1000+ messages**: Hierarchical Summarization or Importance Filtering
+- **Backend context limits**: Adjust strategy based on backend processing capacity
 
 **Trade-offs**:
-- Requires sticky session configuration for load balancing
-- Adds connection state management complexity
-- WebSocket proxy configuration needed in deployment
-- Not compatible with serverless architectures
+- **Full History**: High fidelity but expensive for long conversations
+- **Sliding Window**: Predictable costs but loses older context
+- **Summarization**: Balanced approach but adds summarization overhead
+- **Importance Filtering**: Optimal quality but complex to implement
+
+**Acceptance criteria**:
+- Backend plugins can read and write strategy configuration in session metadata
+- Messages marked with `is_hidden_from_backend=true` are excluded from context forwarded to backend plugins
+- Session metadata exposes message count so backends can select an appropriate strategy
+
+**Actors**: `cpt-cf-chat-engine-actor-backend-plugin`
+<!-- fdd-id-content -->
+
+#### FR-017: Individual Message Deletion
+
+- [ ] `p1` - **ID**: `cpt-cf-chat-engine-fr-delete-message`
+
+<!-- fdd-id-content -->
+The system **MUST** support deletion of individual messages within a session. When a message is deleted, all associated reactions are cascade-deleted automatically to maintain referential integrity. The system validates ownership (authenticated user must own the message) before deletion and notifies the backend plugin of the deletion event.
+
+**Deletion Behavior**:
+- **Hard delete only**: Messages are permanently removed (no soft delete for individual messages)
+- **Cascade delete reactions**: All reactions associated with the message are automatically deleted
+- **Ownership validation**: Only the message owner (authenticated user) can delete their messages
+- **Webhook notification**: Backend receives message_deleted event with message_id and timestamp
+- **Error handling**: The system **SHALL** return appropriate error responses when the user does not own the message or the message is not found
+
+**Use Cases**:
+- User wants to remove a message they regret sending
+- User wants to clean up test messages or mistakes
+- User wants to remove sensitive information accidentally shared
+
+**Constraints**:
+- Deleting a message cascades to its entire descendant subtree (all child messages and their reactions are permanently removed); per ADR-0021 Session Deletion Strategy, cascade delete preserves referential integrity without orphaning tree nodes
+- Cannot delete assistant messages (only user messages can be deleted by users)
+- Deletion is permanent and cannot be undone
 
 **Actors**: `cpt-cf-chat-engine-actor-client`, `cpt-cf-chat-engine-actor-backend-plugin`
+<!-- fdd-id-content -->
+
+#### FR-018: Per-Message Feedback
+
+- [ ] `p2` - **ID**: `cpt-cf-chat-engine-fr-message-feedback`
+
+<!-- fdd-id-content -->
+The system **SHOULD** support per-message feedback in the form of like/dislike reactions and optional text comments. Feedback enables quality monitoring, response quality evaluation, and user satisfaction tracking. Each message can have at most one reaction per user, with reaction changes (like → dislike) replacing the previous reaction. The system stores feedback metadata and optionally forwards it to backend plugins for analytics.
+
+**Reaction Types**:
+- **like**: Positive feedback (thumbs up)
+- **dislike**: Negative feedback (thumbs down)
+- **none**: Remove existing reaction
+
+**Behavioral Rules**:
+- Each message can have at most one reaction per user
+- Reaction changes (like → dislike) replace the previous reaction
+- Optional text comment supported per reaction (bounded length)
+- Reactions are tied to authenticated users (not anonymous)
+
+**Webhook Integration**:
+- Backends receive `message_feedback` events when reactions are added/changed
+- Events include message_id, reaction_type, comment, user_id, timestamp
+- Backends can use feedback for backend optimization, quality metrics, A/B testing
+
+**Privacy & Data Handling**:
+- Feedback is tied to authenticated user (not anonymous)
+- Comments are stored encrypted if they contain sensitive information
+- Feedback can be queried by client for display or exported with session data
+
+**Capability Gating**: Enabled if session type supports feedback capability
+
+**Acceptance criteria**:
+- Adding a like/dislike reaction persists the reaction and is retrievable on subsequent message GETs
+- Submitting a second reaction on the same message replaces the previous one (at most one per user)
+- Feedback requests are rejected when the session type does not enable the feedback capability
+
+**Actors**: `cpt-cf-chat-engine-actor-client`, `cpt-cf-chat-engine-actor-backend-plugin`
+<!-- fdd-id-content -->
+
+#### FR-019: Context Overflow Strategies
+
+- [ ] `p2` - **ID**: `cpt-cf-chat-engine-fr-context-overflow`
+
+<!-- fdd-id-content -->
+The system **SHOULD** provide explicit support for handling context overflow when message history exceeds backend processing capacity. Chat Engine provides primitives and metadata to enable backend plugins to implement various overflow strategies. The system does not enforce a specific strategy but provides the mechanisms for backends to implement their chosen approach.
+
+**Supported Strategy Primitives**:
+
+1. **Sliding Window**: Keep only the most recent N messages to bound context size
+2. **Hard Stop**: Reject new messages when the session exceeds a configured message count threshold
+3. **Drop-Middle**: Retain the beginning and end of the conversation, dropping the middle portion
+4. **Summarization**: Use `cpt-cf-chat-engine-fr-session-summary` to compress older messages into a summary that is included instead of verbatim history
+5. **Message Visibility Flags**: Mark individual messages with `is_hidden_from_backend` to exclude them from context sent to backends
+
+**System Support**:
+- Session metadata exposes estimated message count and processing metrics for backend decision-making
+- Session metadata stores strategy configuration and state between messages
+- Message tree navigation supports arbitrary history traversal by backends
+- `cpt-cf-chat-engine-fr-session-summary` provides summarization capability
+
+**Default Strategy**: Full History (send all messages until overflow, then error)
+
+**Backend Selection Guidelines**:
+- **Short sessions (<50 msgs)**: Full History
+- **Medium sessions (50-200 msgs)**: Sliding Window
+- **Long sessions (200-1000 msgs)**: Summarization + Recent
+- **Very long sessions (1000+ msgs)**: Hierarchical Summarization or Drop-Middle
+
+**Strategy Trade-offs**:
+- **Full History**: Highest fidelity, expensive for long conversations
+- **Sliding Window**: Predictable costs, loses context over time
+- **Summarization**: Balanced approach, adds latency for summary generation
+- **Drop-Middle**: Preserves key context, may lose important middle details
+- **Hard Stop**: Simplest, worst UX (forces session restart)
+
+**Capability Gating**: Strategy configuration exposed via session capabilities
+
+**Acceptance criteria**:
+- Session metadata includes estimated message count and is updated after each message exchange
+- Backend plugins can store and retrieve overflow strategy state in session metadata between requests
+- Messages marked `is_hidden_from_backend=true` are omitted from the context payload sent to backends
+
+**Actors**: `cpt-cf-chat-engine-actor-backend-plugin`
+<!-- fdd-id-content -->
+
+#### FR-020: Message Retention & Cleanup Policies
+
+- [ ] `p2` - **ID**: `cpt-cf-chat-engine-fr-message-retention`
+
+<!-- fdd-id-content -->
+The system **SHOULD** support message-level retention policies that automatically clean up old messages while preserving session structure. Unlike session deletion (FR-014), message retention policies allow selective message cleanup to optimize storage costs while keeping sessions accessible. Cleanup operations preserve message tree integrity and notify backend plugins.
+
+**Message Retention Behavior**:
+- **Age-based cleanup**: Delete messages older than N days
+- **Count-based cleanup**: Keep only last N messages per session
+- **Selective cleanup**: Remove non-active conversation branches (unused variants)
+- **Tree-aware deletion**: Preserve parent messages required for tree structure
+- **Webhook notification**: Backend receives `messages_cleaned` event with deleted message IDs
+
+**Retention Policy Configuration** (per session type):
+- `message_retention_days`: Auto-delete messages older than N days (default: null/unlimited)
+- `max_messages_per_session`: Keep only last N messages (default: null/unlimited)
+- `cleanup_inactive_branches`: Remove unused message variants (default: false)
+- `preserve_favorited`: Keep messages marked with feedback reactions (default: true)
+
+**Cleanup Execution**:
+- Automated job runs daily to enforce retention policies
+- Cleanup preserves active conversation path (marked by is_active=true)
+- Parent messages required for tree structure are never deleted (even if old)
+- Webhook backends notified asynchronously after cleanup completes
+
+**Use Cases**:
+- Reduce storage costs for long-running sessions with thousands of messages
+- Comply with data minimization regulations (GDPR, CCPA)
+- Clean up experimental branches that users never navigate to
+- Archive old conversations while keeping recent context accessible
+
+**Constraints**:
+- Cannot delete messages that are parents to active messages (breaks tree)
+- Cannot delete messages with pending operations or incomplete streaming
+- Cleanup respects session lifecycle state (no cleanup on soft_deleted sessions)
+
+**Integration with Session Retention**:
+- Session retention (FR-014e) operates at session level (all-or-nothing)
+- Message retention operates within active sessions (selective cleanup)
+- When session is deleted, all messages are deleted (session takes precedence)
+
+**Acceptance criteria**:
+- Age-based cleanup deletes messages older than the configured threshold while preserving parent messages required for tree integrity
+- Cleanup job does not degrade production query latency beyond the NFR-015 SLA (<10% p95 increase)
+- Backend plugins receive `messages_cleaned` webhook events after cleanup completes
+
+**Actors**: `cpt-cf-chat-engine-actor-system`, `cpt-cf-chat-engine-actor-backend-plugin`
 <!-- fdd-id-content -->
 
 #### FR-021: Domain Model Schema Extensibility for Plugin Vendors
@@ -672,26 +661,28 @@ The system **SHOULD** provide extensible, versioned base schemas for all core do
 | **Session / Message metadata** | `Session.metadata`, `Message.metadata` | Plugins store and validate typed custom metadata blobs |
 
 **Plugin Schema Contract**:
-- Chat Engine publishes base schemas via its GTS schema registry
-- Plugin vendors reference base schemas and declare derived schemas using the same GTS ID format (`gts://gts.x.core.events.event.v1~{plugin-namespace}.{name}.v{N}~`)
-- Chat Engine stores plugin-provided metadata in opaque `metadata` fields but **validates** the metadata blob against the declared derived schema
-- Access control checks are applied to custom metadata based on the plugin's declared schema and the session/message ownership model
+- Chat Engine publishes versioned base schemas that plugin vendors can reference and extend with derived schemas
+- Plugins extend the domain model via open `metadata` fields on sessions and messages; base schema fields cannot be overridden
+- Chat Engine validates plugin-provided metadata against declared derived schemas and enforces access control based on the session/message ownership model
 
-**Validation and Access Control**:
-- When a plugin declares a derived schema for `Session.metadata` or `Message.metadata`, Chat Engine registers it and validates incoming metadata against it
-- Plugins cannot override or extend base schema required fields; they extend via the open `metadata` fields only
-- Read access to custom metadata follows the same tenant/user isolation as the parent entity
-- Write access is gated by the plugin's JWT `client_id` claim — plugins may only write to metadata they own
+> **Note**: Schema ID formats, validation mechanics, and access control implementation details are specified in [DESIGN.md](./DESIGN.md).
 
 **Non-Goals**:
 - Chat Engine does not execute plugin code, only validates schemas and enforces access
-- Plugin schemas are purely structural (JSON Schema); behavioral logic stays in backend plugins
+- Plugin schemas are purely structural; behavioral logic stays in backend plugins
 - Modification of base Chat Engine schemas (fields, enums) is not allowed; only `metadata` fields are extensible
+
+**Acceptance criteria**:
+- Plugin-provided metadata that conforms to a declared derived schema is accepted and persisted
+- Plugin-provided metadata that violates the declared schema is rejected with a structured validation error
+- Base schema fields cannot be overridden by plugin extensions; attempts are rejected
 
 **Actors**: `cpt-cf-chat-engine-actor-backend-plugin`, `cpt-cf-chat-engine-actor-tenant-admin`
 <!-- fdd-id-content -->
 
 ## 6. Non-Functional Requirements
+
+> Note: NFR-011 and NFR-012 (WebSocket-related) are excluded per Section 14 (Intentional Exclusions).
 
 #### NFR-001: Response Time
 
@@ -773,22 +764,6 @@ System must enforce file size limits with a default of 10MB per individual file.
 Session history search must return results within 1 second at p95 for sessions with up to 10,000 messages. Cross-session search must return results within 3 seconds at p95 for clients with up to 1,000 sessions. Search must support pagination for large result sets.
 <!-- fdd-id-content -->
 
-#### NFR-011: WebSocket Performance
-
-- [ ] `p2` - **ID**: `cpt-cf-chat-engine-nfr-websocket-performance`
-
-<!-- fdd-id-content -->
-When WebSocket is enabled, connection establishment must complete within 500ms at p95. Message routing latency over WebSocket must be less than 50ms at p95 (lower than HTTP's 100ms target). Heartbeat interval must be 30 seconds with automatic reconnection using exponential backoff (maximum 60 seconds). The system must support at least 5,000 concurrent WebSocket connections per instance.
-<!-- fdd-id-content -->
-
-#### NFR-012: WebSocket Reliability
-
-- [ ] `p2` - **ID**: `cpt-cf-chat-engine-nfr-websocket-reliability`
-
-<!-- fdd-id-content -->
-When WebSocket is enabled, connections must support automatic reconnection with state restoration after network interruptions. Message delivery guarantees must match HTTP protocol (at-least-once for operations, exactly-once for streaming). The system must handle graceful connection closure with pending operation completion or cancellation. Connection timeout must be 5 minutes for idle connections, configurable per deployment.
-<!-- fdd-id-content -->
-
 #### NFR-013: Message History Handling
 
 - [ ] `p2` - **ID**: `cpt-cf-chat-engine-nfr-message-history`
@@ -839,7 +814,7 @@ Chat Engine's primary users are Application Developers and Backend Plugin Develo
 - **Error response quality**: All API errors must return structured responses with: machine-readable error code, human-readable message, and actionable remediation hint
 - **API documentation**: A complete OpenAPI specification must be published and kept up-to-date with every API change
 - **Webhook contract documentation**: Webhook backend developers must have a documented contract covering all event types, payload schemas, and expected response formats
-- **Client SDK**: At minimum one reference client SDK must be provided (language TBD) demonstrating session creation, message exchange, and streaming
+- **Client SDK**: At minimum one reference client SDK must be provided demonstrating session creation, message exchange, and streaming
 <!-- fdd-id-content -->
 
 ### 6.1 NFR Exclusions
@@ -1052,7 +1027,7 @@ Backend Plugin integration is defined through the `ChatEngineBackendPlugin` trai
 
 **Alternative Flows**:
 - **Client cancels mid-stream**: System stops forwarding, saves partial response with incomplete status (see `cpt-cf-chat-engine-fr-stop-streaming`)
-- **Webhook backend timeout**: System closes stream, saves error message with timeout metadata, returns 504 to client
+- **Webhook backend timeout**: System closes stream, saves error message with timeout metadata, returns appropriate timeout error to client
 - **Webhook backend returns error**: System saves error message, propagates structured error to client
 <!-- fdd-id-content -->
 
@@ -1084,8 +1059,8 @@ Backend Plugin integration is defined through the `ChatEngineBackendPlugin` trai
 
 **Alternative Flows**:
 - **Client requests restore within retention period**: Session transitions back to `active` (see `cpt-cf-chat-engine-fr-restore-session`)
-- **Session not found**: System returns 404
-- **Client does not own session**: System returns 403 Forbidden
+- **Session not found**: System returns appropriate error indicating the session does not exist
+- **Client does not own session**: System returns appropriate authorization error
 <!-- fdd-id-content -->
 
 #### UC-008: Backend Failure During Streaming
@@ -1108,19 +1083,22 @@ Backend Plugin integration is defined through the `ChatEngineBackendPlugin` trai
 **Postconditions**: Partial assistant message saved with error metadata; client notified of failure; session remains operational
 
 **Alternative Flows**:
-- **Timeout before first byte**: System returns 504 to client; no assistant message saved
-- **Backend returns 503/429 (rate limit)**: System logs backend health event; client receives retryable error with backoff hint
+- **Timeout before first byte**: System returns appropriate timeout error to client; no assistant message saved
+- **Backend rate-limited or unavailable**: System logs backend health event; client receives retryable error with backoff hint
 - **All retries exhausted** (if retry configured for session type): System marks session backend as degraded; client can still read history (degraded mode per `cpt-cf-chat-engine-nfr-availability`)
 <!-- fdd-id-content -->
 
 ## 9. Acceptance Criteria
 
 **Success Criteria**:
-- Message routing latency < 100ms (p95) excluding backend processing time
-- 99.9% uptime for session management operations
-- Support for 10,000 concurrent sessions per instance
-- Zero message loss during backend failures
-- First message response time < 200ms from session creation
+
+> Baseline: N/A (greenfield system — no prior system to compare)
+
+- Message routing latency < 100ms (p95) excluding backend processing time — at production launch
+- 99.9% uptime for session management operations — within 3 months of GA
+- Support for 10,000 concurrent sessions per instance — at production launch
+- Zero message loss during backend failures — at production launch
+- First message response time < 200ms from session creation — at production launch
 
 ## 10. Dependencies
 
@@ -1331,6 +1309,11 @@ The following checklist categories are **not applicable** to this PRD. Each is e
 | **Deployment Requirements (OPS-PRD-001)** | Deferred | Deployment environment, release cadence, and rollback policies are defined in the CyberFabric platform-level PRD and infrastructure documentation. Chat Engine inherits these. |
 | **Monitoring Requirements (OPS-PRD-002)** | Deferred | Alerting, dashboards, and log retention are governed by the CyberFabric platform observability standards. Chat Engine must emit standard structured logs and metrics — specifics defined in DESIGN. |
 | **Industry Standards (COMPL-PRD-002)** | Partial | Applicable standards are referenced inline: GDPR (Art. 17, 25), CCPA, and ACID transaction guarantees. No formal certification (ISO 27001, SOC 2) is currently required. |
+| **WebSocket Protocol** (FR-015) | Excluded | Excluded per ADR-0006 — HTTP streaming with NDJSON chosen over WebSocket for client communication. WebSocket adds connection state, sticky sessions, and deployment complexity incompatible with stateless scaling architecture. |
+| **WebSocket Performance** (NFR-011) | Excluded | Excluded per ADR-0006 — WebSocket protocol not adopted; performance NFRs not applicable. |
+| **WebSocket Reliability** (NFR-012) | Excluded | Excluded per ADR-0006 — WebSocket protocol not adopted; reliability NFRs not applicable. |
+| **Audit Logging / Trail** (SEC-PRD-004) | Deferred | Audit logging and trail requirements are the responsibility of the platform-level observability infrastructure, not individual modules. Chat Engine emits standard structured logs and metrics consumed by the platform. |
+| **Legal / Consent Management** (COMPL-PRD-003) | N/A | Consent management, data subject access/rectification/portability rights, terms of service, and privacy policy requirements are the client application's responsibility. Chat Engine operates as a data processor; controller obligations are out of scope. |
 
 ## 15. Traceability
 

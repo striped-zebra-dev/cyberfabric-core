@@ -23,6 +23,8 @@ Updated:  2026-03-06 by Constructor Tech
 
 **Status**: accepted
 
+**Review**: Revisit if full-text search needs multi-language or fuzzy matching
+
 **ID**: `cpt-cf-chat-engine-adr-search-strategy`
 
 ## Context and Problem Statement
@@ -66,21 +68,47 @@ Chosen option: "PostgreSQL tsvector with GIN indexes", because it provides built
 
 ### Confirmation
 
-Confirmed via design review and alignment with DESIGN.md implementation.
+Confirmed when PostgreSQL tsvector with GIN indexes returns ranked full-text search results within 1 second for session-scoped queries and within 3 seconds for cross-session queries.
 
 ## Pros and Cons of the Options
 
 ### Option 1: PostgreSQL tsvector with GIN indexes
 
-See "Considered Options" and "Consequences" above for trade-off analysis.
+Native full-text search using tsvector columns, GIN indexing, and ts_rank_cd for relevance ranking.
+
+* Good, because no additional infrastructure — search runs within the existing PostgreSQL database
+* Good, because GIN indexes provide fast full-text lookups meeting performance targets (< 1s session, < 3s cross-session)
+* Good, because ts_rank_cd provides relevance ranking with document length normalization
+* Good, because built-in stemming and case-insensitive matching ("running" matches "run")
+* Bad, because less feature-rich than dedicated search engines (no typo tolerance, fuzzy matching)
+* Bad, because GIN indexes consume additional storage (~20% overhead per indexed column)
+* Bad, because index updates add write latency (~5ms per message insert)
+* Bad, because cross-language stemming is limited (single language dictionary per column)
 
 ### Option 2: Elasticsearch
 
-See "Considered Options" and "Consequences" above for trade-off analysis.
+Dedicated search engine deployed alongside PostgreSQL for advanced full-text search.
+
+* Good, because rich search features out of the box (fuzzy matching, typo tolerance, synonyms, highlighting)
+* Good, because horizontally scalable — search throughput scales independently of the database
+* Good, because supports advanced relevance tuning (BM25, boosting, custom scoring)
+* Good, because multi-language analysis with per-field language detection
+* Bad, because requires separate infrastructure (cluster deployment, monitoring, upgrades)
+* Bad, because data synchronization between PostgreSQL and Elasticsearch adds complexity and eventual consistency
+* Bad, because significant operational overhead (JVM tuning, shard management, index lifecycle)
+* Bad, because increased latency for writes due to dual-write or change-data-capture pipeline
 
 ### Option 3: Simple LIKE queries
 
-See "Considered Options" and "Consequences" above for trade-off analysis.
+Basic pattern matching using PostgreSQL ILIKE operator on message content columns.
+
+* Good, because trivial to implement — no indexes, tsvector columns, or external systems required
+* Good, because exact substring matching is predictable and easy to understand
+* Good, because zero additional storage overhead (no extra indexes or columns)
+* Bad, because ILIKE triggers sequential scans on large tables — does not meet performance requirements
+* Bad, because no relevance ranking — results returned in insertion order, not by relevance
+* Bad, because no stemming or linguistic processing ("running" does not match "run")
+* Bad, because phrase search and boolean operators must be hand-implemented with complex SQL
 
 ## Related Design Elements
 

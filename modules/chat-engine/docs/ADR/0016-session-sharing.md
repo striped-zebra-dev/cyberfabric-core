@@ -24,6 +24,8 @@
 
 **Status**: accepted
 
+**Review**: Revisit if multi-token sharing per session is required
+
 **ID**: `cpt-cf-chat-engine-adr-session-sharing`
 
 ## Context and Problem Statement
@@ -43,42 +45,39 @@ Users want to share conversations with others for collaboration, review, or assi
 
 ## Considered Options
 
-* **Option 1: Cryptographic share token with separate table** - ShareToken entity maps token to session_id
+* **Option 1: Cryptographic share token as column on sessions table** - share_token column on sessions table maps token to session
 * **Option 2: Signed session_id JWT** - Encode session_id in JWT, verify signature
 * **Option 3: Publicly readable sessions** - Sessions publicly accessible by default
 
 ## Decision Outcome
 
-Chosen option: "Cryptographic share token with separate table", because it provides cryptographically secure tokens (min 32 chars random), enables revocation via database flag, supports optional expiration, tracks creator for audit, allows multiple tokens per session, and keeps session_id hidden from recipients.
+Chosen option: "Cryptographic share token stored as a column on the sessions table", because it provides cryptographically secure tokens (min 32 chars random), enables revocation by clearing the column, supports optional expiration via application logic, and keeps session_id hidden from recipients. This approach avoids the overhead of a separate join table while leveraging the existing sessions table (`cpt-cf-chat-engine-dbtable-sessions`).
 
 ### Consequences
 
 * Good, because share tokens cryptographically secure (not guessable)
-* Good, because revocation instant (database flag, no token re-issue)
-* Good, because optional expiration (time-limited sharing)
-* Good, because audit trail (created_by, created_at tracking)
-* Good, because multiple tokens per session (different recipient groups)
+* Good, because revocation instant (clear column value, no token re-issue)
+* Good, because optional expiration (time-limited sharing via application logic)
 * Good, because session_id hidden (token maps to session internally)
 * Good, because recipients branch without owning session
-* Bad, because separate table join required (token → session_id lookup)
+* Good, because no separate table or join required (share_token is a column on sessions table)
+* Bad, because single token per session (column approach limits to one active share token)
 * Bad, because token generation requires crypto library
 * Bad, because no token refresh mechanism (expired = generate new)
-* Bad, because share_tokens table grows unbounded (cleanup needed)
 
 ### Confirmation
 
-Confirmed via design review and alignment with DESIGN.md implementation.
+Confirmed when a cryptographic share_token stored on the sessions table grants read-only access to the conversation and allows recipients to branch without exposing the session_id.
 
 ## Pros and Cons of the Options
 
-### Option 1: Cryptographic share token with separate table
+### Option 1: Cryptographic share token as column on sessions table
 
 * Good, because tokens are cryptographically secure and not guessable (min 32 chars random)
-* Good, because revocation is instant via database flag without token re-issue
-* Good, because optional expiration and audit trail (created_by, created_at) are built in
-* Good, because multiple tokens per session allow sharing with different recipient groups
-* Bad, because separate table join required for token-to-session lookup
-* Bad, because share_tokens table grows unbounded and requires cleanup
+* Good, because revocation is instant by clearing the column value
+* Good, because no separate table or join required (column on existing sessions table)
+* Good, because UNIQUE constraint ensures token uniqueness across all sessions
+* Bad, because single token per session (one column = one active share token)
 * Bad, because no token refresh mechanism (expired tokens require generating new ones)
 
 ### Option 2: Signed session_id JWT
@@ -110,7 +109,7 @@ Confirmed via design review and alignment with DESIGN.md implementation.
 
 **Design Elements**:
 * `cpt-cf-chat-engine-design-entity-share-token` - Cryptographic token, session mapping, metadata
-* cpt-cf-chat-engine-db-table-share-tokens - ShareToken table with constraints
+* `cpt-cf-chat-engine-dbtable-sessions` - Sessions table with share_token column (VARCHAR UNIQUE NULL)
 * Sequence diagram S10 (Share Session)
 
 **Related ADRs**:

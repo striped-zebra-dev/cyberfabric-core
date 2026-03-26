@@ -25,6 +25,8 @@ Updated:  2026-03-06 by Constructor Tech
 
 **Status**: accepted
 
+**Review**: Revisit if Chat Engine needs direct file storage management.
+
 **ID**: `cpt-cf-chat-engine-adr-file-handling`
 
 ## Context and Problem Statement
@@ -71,7 +73,7 @@ Chosen option: "Separate File Storage service with UUID identifiers", because it
 
 ### Confirmation
 
-Confirmed via design review and alignment with DESIGN.md implementation.
+Confirmed by verifying file_id reference pattern in message persistence layer.
 
 ### UUID vs URL Approach
 
@@ -100,19 +102,52 @@ Confirmed via design review and alignment with DESIGN.md implementation.
 
 ### Option 1: Separate File Storage service with UUID identifiers
 
-See "Considered Options" and "Consequences" above for trade-off analysis.
+Clients upload files to an external File Storage service and receive stable UUIDs. Messages contain only file UUIDs.
+
+* Good, because clients upload directly to File Storage, bypassing Chat Engine and reducing latency
+* Good, because Chat Engine stores only small UUID references, not large file content
+* Good, because UUIDs are stable identifiers that never expire, unlike signed URLs
+* Good, because centralized access control and transparent storage migration without updating message records
+* Bad, because requires deploying and maintaining a separate File Storage service
+* Bad, because webhook backends must integrate with File Storage Service API to fetch files
+* Bad, because clients need an additional API call to File Storage when displaying files
+* Bad, because file lifecycle management is decoupled from session lifecycle
 
 ### Option 2: Separate File Storage service with URL identifiers
 
-See "Considered Options" and "Consequences" above for trade-off analysis.
+Clients upload files to an external File Storage service and receive URLs. Messages contain file URLs directly.
+
+* Good, because clients and backends can access files directly via URL without additional API calls
+* Good, because file uploads bypass Chat Engine, keeping the critical path lightweight
+* Good, because URLs are self-contained and human-readable for debugging
+* Bad, because signed URLs expire, requiring refresh logic or storing permanent URLs that leak access
+* Bad, because URL changes (storage migration, CDN switch) require updating all existing message records
+* Bad, because URLs in logs or external systems create a security risk (direct file access without auth)
+* Bad, because no centralized access control — anyone with the URL can access the file
 
 ### Option 3: Database BLOB storage
 
-See "Considered Options" and "Consequences" above for trade-off analysis.
+File content stored directly in PostgreSQL as bytea or BLOB columns alongside message records.
+
+* Good, because simplest architecture — no external service dependency, single data store
+* Good, because file lifecycle is naturally tied to message/session lifecycle (cascade deletes)
+* Good, because transactional consistency between message metadata and file content
+* Bad, because database storage is significantly more expensive per GB than object storage
+* Bad, because large BLOBs degrade database performance (backup times, replication lag, query throughput)
+* Bad, because database becomes a bandwidth bottleneck for file uploads and downloads
+* Bad, because no CDN integration for file delivery, increasing latency for geographically distributed clients
 
 ### Option 4: Chat Engine file service
 
-See "Considered Options" and "Consequences" above for trade-off analysis.
+Chat Engine provides its own upload endpoint and manages file storage on local disk or attached storage.
+
+* Good, because single service handles both messaging and files, simplifying deployment
+* Good, because tight integration allows atomic message-with-files operations
+* Good, because no external service dependency for file operations
+* Bad, because Chat Engine becomes a bottleneck for file uploads, adding load to the critical messaging path
+* Bad, because file storage management (cleanup, replication, CDN) increases Chat Engine operational complexity
+* Bad, because horizontal scaling requires shared storage or file synchronization between instances
+* Bad, because violates the separation of concerns principle — Chat Engine should focus on routing and persistence
 
 ## Related Design Elements
 

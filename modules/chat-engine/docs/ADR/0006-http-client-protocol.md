@@ -31,6 +31,8 @@ Updated:  2026-03-06 by Constructor Tech
 
 **Status**: accepted
 
+**Review**: Revisit if WebSocket support is reconsidered or gRPC demand grows.
+
 **ID**: `cpt-cf-chat-engine-adr-http-client-protocol`
 
 ## Context and Problem Statement
@@ -159,19 +161,51 @@ Clients cancel streaming by closing the HTTP connection. In browsers, this is do
 
 ### Option 1: HTTP REST + WebSocket split
 
-See "Considered Options" and "Consequences" above for trade-off analysis.
+CRUD operations use standard HTTP REST; streaming operations use a persistent WebSocket connection.
+
+* Good, because WebSocket provides true bidirectional communication, enabling server-initiated push
+* Good, because CRUD operations remain standard REST with full HTTP semantics (caching, status codes)
+* Good, because WebSocket is a mature, well-supported protocol with broad library availability
+* Bad, because two protocols increase client complexity (HTTP client + WebSocket client)
+* Bad, because WebSocket connections are stateful, requiring sticky sessions or session affinity for load balancing
+* Bad, because WebSocket proxying requires special infrastructure configuration (upgrade handling, timeouts)
+* Bad, because serverless and edge environments have limited or no WebSocket support
 
 ### Option 2: HTTP with chunked streaming (NDJSON)
 
-See "Considered Options" and "Consequences" above for trade-off analysis.
+Single HTTP protocol for all operations. CRUD uses standard request/response; streaming uses HTTP chunked transfer with NDJSON.
+
+* Good, because single protocol simplifies client implementation (no WebSocket library needed)
+* Good, because stateless servers enable true horizontal scaling without sticky sessions
+* Good, because standard HTTP load balancing, monitoring, and debugging tools work without modification
+* Good, because cancellation is intuitive — close the HTTP connection
+* Bad, because no server push capability; clients must poll for asynchronous updates
+* Bad, because authentication token must be sent with every request (no persistent authenticated session)
+* Bad, because long-running chunked responses may be terminated by intermediate proxies with aggressive timeouts
 
 ### Option 3: HTTP/2 Server-Sent Events (SSE)
 
-See "Considered Options" and "Consequences" above for trade-off analysis.
+CRUD operations use HTTP/2 requests; streaming uses Server-Sent Events for server-to-client push.
+
+* Good, because SSE is a W3C standard with native browser support via EventSource API
+* Good, because SSE provides automatic reconnection and last-event-id tracking out of the box
+* Good, because HTTP/2 multiplexing allows multiple concurrent streams over a single connection
+* Bad, because SSE is unidirectional (server-to-client only), requiring a separate channel for client-to-server messages
+* Bad, because HTTP/2 is not universally supported by all proxies, CDNs, and legacy infrastructure
+* Bad, because SSE uses text-based event format with limited structure compared to NDJSON
+* Bad, because EventSource API has limited configurability (no custom headers without polyfill)
 
 ### Option 4: gRPC streaming
 
-See "Considered Options" and "Consequences" above for trade-off analysis.
+All operations use gRPC with Protocol Buffers — unary calls for CRUD, server streaming for responses.
+
+* Good, because strongly typed contracts via Protocol Buffers ensure type safety across client and server
+* Good, because gRPC streaming is efficient with low overhead and built-in flow control
+* Good, because bidirectional streaming enables both server push and client cancellation natively
+* Bad, because browser support requires gRPC-Web proxy, adding infrastructure complexity
+* Bad, because not human-readable — debugging requires specialized tools (grpcurl, Bloom RPC)
+* Bad, because Protocol Buffer schema management adds development overhead and versioning complexity
+* Bad, because less familiar to frontend developers compared to REST/JSON patterns
 
 ## Related Design Elements
 

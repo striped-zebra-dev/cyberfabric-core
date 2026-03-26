@@ -23,6 +23,8 @@ Updated:  2026-03-06 by Constructor Tech
 
 **Status**: accepted
 
+**Review**: Revisit if WebSocket support is added or HTTP/3 becomes available.
+
 **ID**: `cpt-cf-chat-engine-adr-streaming-architecture`
 
 ## Context and Problem Statement
@@ -47,33 +49,33 @@ Chat Engine must minimize time-to-first-byte for assistant responses to provide 
 
 ## Decision Outcome
 
-Chosen option: "Streaming-first with HTTP chunked transfer", because it minimizes time-to-first-byte (< 200ms requirement), enables responsive UX for slow backends, supports cancellation via connection close saving compute resources, and keeps both webhook and client protocols simple (always HTTP streaming with NDJSON format).
+Chosen option: "Streaming-first with HTTP chunked transfer", because it minimizes time-to-first-byte (target: < 200ms based on HTTP chunked transfer baseline measurements), enables responsive UX for slow backends, supports cancellation via connection close saving compute resources, and keeps both webhook and client protocols simple (always HTTP streaming with NDJSON format).
 
 ### Consequences
 
-* Good, because first response chunk arrives at client within 200ms of backend streaming
+* Good, because first response chunk targets arrival at client within 200ms of backend streaming (based on HTTP chunked transfer baseline measurements)
 * Good, because perceived latency is much lower than buffered approach
 * Good, because clients can cancel slow responses (stop button)
 * Good, because non-streaming backends work transparently (wrapped in stream adapter)
 * Good, because webhook protocol remains simple HTTP (no WebSocket complexity for backend devs)
 * Good, because HTTP/2 enables multiple concurrent streams over single connection
-* Bad, because streaming overhead adds ~10ms latency per chunk forwarding
+* Bad, because streaming overhead adds low-latency overhead per chunk forwarding
 * Bad, because partial responses require special handling if connection drops
 * Bad, because backpressure management adds complexity (buffer limits, flow control)
 
 ### Confirmation
 
-Confirmed via design review and alignment with DESIGN.md implementation.
+Confirmed by benchmarking NDJSON streaming latency against SSE and WebSocket alternatives.
 
 ## Pros and Cons of the Options
 
 ### Option 1: Streaming-first with HTTP chunked transfer
 
-* Good, because first response chunk arrives at client within 200ms of backend streaming
+* Good, because first response chunk targets arrival at client within 200ms of backend streaming (based on HTTP chunked transfer baseline measurements)
 * Good, because perceived latency is much lower than buffered approach
 * Good, because clients can cancel slow responses mid-generation saving compute resources
 * Good, because non-streaming backends work transparently via stream adapter wrapping
-* Bad, because streaming overhead adds ~10ms latency per chunk forwarding
+* Bad, because streaming overhead adds low-latency overhead per chunk forwarding
 * Bad, because partial responses require special handling if connection drops
 * Bad, because backpressure management adds complexity (buffer limits, flow control)
 

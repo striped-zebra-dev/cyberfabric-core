@@ -24,6 +24,8 @@
 
 **Status**: accepted
 
+**Review**: Revisit if capability filtering granularity needs to be per-message
+
 **ID**: `cpt-cf-chat-engine-adr-capability-filtering`
 
 ## Context and Problem Statement
@@ -66,21 +68,45 @@ Chosen option: "enabled_capabilities array per message", because it provides per
 
 ### Confirmation
 
-Confirmed via design review and alignment with DESIGN.md implementation.
+Confirmed when each message request accepts a CapabilityValue[] array validated against the session's enabled_capabilities, and the backend receives the per-message capability values.
 
 ## Pros and Cons of the Options
 
 ### Option 1: enabled_capabilities array per message
 
-See "Considered Options" and "Consequences" above for trade-off analysis.
+Client sends an array of `CapabilityValue` objects (`{id, value}`) with each message request.
+
+* Good, because per-message granularity lets users optimize cost on a per-request basis
+* Good, because backend receives explicit, typed capability values — no inference needed
+* Good, because supports capability subsets (enable web_search but disable code_execution)
+* Good, because new capability types work without protocol changes
+* Bad, because client must construct and send `CapabilityValue[]` with every message
+* Bad, because validation overhead — each capability id and value type must be checked against session definitions
+* Bad, because clients that want defaults must still explicitly send all default values
 
 ### Option 2: Session-level toggle
 
-See "Considered Options" and "Consequences" above for trade-off analysis.
+Update session settings to enable/disable capabilities globally for all subsequent messages.
+
+* Good, because simpler client implementation — set capabilities once, apply to all messages
+* Good, because reduces per-message payload size (no capability array in each request)
+* Good, because provides a consistent capability configuration visible to all session participants
+* Bad, because no per-message granularity — users cannot disable an expensive feature for a single query
+* Bad, because concurrent clients may conflict when toggling session-level capability settings
+* Bad, because changing capabilities requires an extra API call to update the session before sending a message
+* Bad, because capability state is implicit per message, making audit and replay harder
 
 ### Option 3: Implicit capabilities
 
-See "Considered Options" and "Consequences" above for trade-off analysis.
+Backend infers which capabilities to use based on message content analysis.
+
+* Good, because zero client effort — no capability configuration needed in the request
+* Good, because simplest possible client protocol (just send message text)
+* Good, because backend can apply domain-specific heuristics to detect capability needs
+* Bad, because inference is unreliable — backend may enable expensive capabilities unnecessarily
+* Bad, because users lose explicit control over cost and behavior
+* Bad, because inference logic must be maintained and updated as new capabilities are added
+* Bad, because difficult to debug or predict which capabilities will be activated for a given message
 
 ## Related Design Elements
 

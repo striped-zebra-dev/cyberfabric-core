@@ -26,6 +26,8 @@ Updated:  2026-03-09 by Constructor Tech
 
 **Status**: accepted — supersedes former ADR "Synchronous HTTP Webhooks with Streaming", "Circuit Breaker per Webhook Backend", "Per-Session-Type Timeout Configuration" (removed)
 
+**Review**: Revisit if plugin performance requires in-process integration
+
 **ID**: `cpt-cf-chat-engine-adr-plugin-backend-integration`
 
 ## Context and Problem Statement
@@ -150,7 +152,7 @@ The plugin config is forwarded to the plugin in every call context (`plugin_conf
 * `cpt-cf-chat-engine-fr-create-session` — plugin `on_session_created` call replaces session.created webhook event
 * `cpt-cf-chat-engine-fr-schema-extensibility` — plugin registers GTS derived schemas at startup
 
-**Superseded ADRs** (removed):
+**Superseded ADRs** (removed — these were unnumbered internal drafts that were never published as standalone ADRs):
 
 * Former "Synchronous HTTP Webhooks with Streaming" — `webhook_url` replaced by `plugin_instance_id`
 * Former "Circuit Breaker per Webhook Backend" — responsibility moved to plugin

@@ -23,6 +23,8 @@ Updated:  2026-03-06 by Constructor Tech
 
 **Status**: accepted
 
+**Review**: Revisit if graceful shutdown semantics are needed for streaming.
+
 **ID**: `cpt-cf-chat-engine-adr-streaming-cancellation`
 
 ## Context and Problem Statement
@@ -63,21 +65,46 @@ Chosen option: "Close HTTP connection", because it provides immediate cancellati
 
 ### Confirmation
 
-Confirmed via design review and alignment with DESIGN.md implementation.
+Confirmed by testing client-side connection close behavior across HTTP clients.
 
 ## Pros and Cons of the Options
 
 ### Option 1: Close HTTP connection
 
-See "Considered Options" and "Consequences" above for trade-off analysis.
+Client aborts the HTTP request to cancel the stream. Uses AbortController in browsers or request cancellation in other clients.
+
+* Good, because cancellation is immediate — no round-trip needed, the connection is simply dropped
+* Good, because standard HTTP pattern familiar to all developers (AbortController, request.abort())
+* Good, because no separate cancellation endpoint required, reducing API surface
+* Good, because server detects disconnection and can clean up resources promptly
+* Bad, because no explicit cancellation acknowledgment from the server (cancellation is implicit)
+* Bad, because backend must handle abrupt connection close gracefully to avoid partial state corruption
+* Bad, because network-level disconnects are indistinguishable from intentional cancellations
 
 ### Option 2: HTTP DELETE request
 
-See "Considered Options" and "Consequences" above for trade-off analysis.
+Client sends a separate DELETE request to a cancellation endpoint (e.g., DELETE /api/v1/messages/{id}/stream) to stop generation.
+
+* Good, because cancellation is an explicit API call with a clear response confirming the action
+* Good, because the original streaming connection remains open for a final status or summary event
+* Good, because cancellation intent is unambiguous and distinguishable from network failures
+* Good, because cancellation can include metadata (reason, partial response handling instructions)
+* Bad, because requires a separate endpoint, increasing API surface and implementation complexity
+* Bad, because race condition between cancellation request and stream completion requires careful handling
+* Bad, because two concurrent requests (streaming + cancel) increase client complexity and connection usage
+* Bad, because cancellation latency depends on a full HTTP round-trip rather than immediate connection close
 
 ### Option 3: HTTP timeout
 
-See "Considered Options" and "Consequences" above for trade-off analysis.
+Aggressive timeouts are configured to automatically terminate long-running streaming operations.
+
+* Good, because simplest implementation — no client-side cancellation logic needed
+* Good, because provides a safety net against runaway or stuck backend responses
+* Good, because timeout behavior is consistent and predictable across all clients
+* Bad, because timeout is indiscriminate — it cannot distinguish between a legitimately long response and one the user wants to cancel
+* Bad, because users have no control over when cancellation happens (no "stop" button functionality)
+* Bad, because choosing the right timeout value is difficult — too short cuts off valid responses, too long wastes resources
+* Bad, because partial response preservation depends on where the timeout is enforced (client, proxy, or server)
 
 ## Related Design Elements
 

@@ -23,6 +23,8 @@ Updated:  2026-03-06 by Constructor Tech
 
 **Status**: accepted
 
+**Review**: Revisit if event schema versioning issues arise.
+
 **ID**: `cpt-cf-chat-engine-adr-webhook-event-types`
 
 ## Context and Problem Statement
@@ -63,21 +65,45 @@ Chosen option: "Typed events with event field", because it provides clear type d
 
 ### Confirmation
 
-Confirmed via design review and alignment with DESIGN.md implementation.
+Confirmed by reviewing webhook payload schemas and consumer integration tests.
 
 ## Pros and Cons of the Options
 
 ### Option 1: Typed events with event field
 
-See "Considered Options" and "Consequences" above for trade-off analysis.
+JSON payload with an "event" discriminator field (e.g., "message.new", "session.created"). Single webhook URL receives all events.
+
+* Good, because event type is explicit in the payload, enabling clear routing and logging
+* Good, because single webhook URL simplifies backend configuration and management
+* Good, because new event types can be added without changing webhook registration or URLs
+* Good, because each event type can have its own tailored schema while sharing a common envelope
+* Bad, because backends must implement dispatching logic to handle multiple event types
+* Bad, because schema validation is more complex (discriminated union rather than per-endpoint schema)
+* Bad, because a misconfigured handler for one event type can affect processing of others on the same endpoint
 
 ### Option 2: Separate endpoints per event
 
-See "Considered Options" and "Consequences" above for trade-off analysis.
+Each event type is sent to a distinct webhook URL (e.g., /webhooks/message-new, /webhooks/session-created).
+
+* Good, because each endpoint has a single responsibility, simplifying per-event handler implementation
+* Good, because URL-level routing enables independent scaling and monitoring per event type
+* Good, because schema validation is straightforward — each endpoint has exactly one expected payload shape
+* Bad, because webhook registration becomes complex — must configure and maintain a URL per event type
+* Bad, because adding new event types requires registering new endpoints on both Chat Engine and backend
+* Bad, because operational overhead increases with endpoint count (monitoring, alerting, documentation per URL)
+* Bad, because cross-event concerns (authentication, logging, error handling) must be duplicated across endpoints
 
 ### Option 3: Generic events with action hints
 
-See "Considered Options" and "Consequences" above for trade-off analysis.
+Single event structure with a generic payload and optional action metadata fields. Backends interpret the metadata to determine behavior.
+
+* Good, because a single, stable schema reduces protocol versioning concerns
+* Good, because backends can ignore unrecognized action hints, providing natural forward compatibility
+* Good, because simple to implement initially — one event structure fits all cases
+* Bad, because loose typing makes backend implementation error-prone (action hints are advisory, not enforced)
+* Bad, because debugging is harder — generic payloads lack semantic clarity in logs and traces
+* Bad, because backends must inspect metadata to determine event semantics, adding implicit coupling
+* Bad, because schema evolution is constrained — the generic structure may not accommodate future event types cleanly
 
 ## Related Design Elements
 
