@@ -1451,11 +1451,22 @@ dependencies = [
 name = "cf-modkit-canonical-errors"
 version = "0.6.1"
 dependencies = [
+ "cf-modkit-canonical-errors-macro",
  "gts-id",
  "sea-orm",
  "serde",
  "serde_json",
  "trybuild",
+]
+
+[[package]]
+name = "cf-modkit-canonical-errors-macro"
+version = "0.6.1"
+dependencies = [
+ "proc-macro-crate",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]
