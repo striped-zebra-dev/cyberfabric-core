@@ -1512,6 +1512,79 @@ async fn proxy_websocket_upgrade_returns_101() {
     );
 }
 
+// WebSocket upgrade rejected by upstream returns 502 ProtocolError with gateway error source.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn proxy_websocket_upgrade_rejected_returns_502_protocol_error() {
+    let h = AppHarness::builder().build().await;
+    let ctx = h.security_context().clone();
+
+    // Point at /v1/models — a plain GET endpoint, not a WebSocket handler.
+    let upstream = h
+        .facade()
+        .create_upstream(
+            ctx.clone(),
+            CreateUpstreamRequest::builder(
+                Server {
+                    endpoints: vec![Endpoint {
+                        scheme: Scheme::Http,
+                        host: "127.0.0.1".into(),
+                        port: h.mock_port(),
+                    }],
+                },
+                "gts.x.core.oagw.protocol.v1~x.core.oagw.http.v1",
+            )
+            .alias("ws-reject-test")
+            .build(),
+        )
+        .await
+        .unwrap();
+
+    h.facade()
+        .create_route(
+            ctx.clone(),
+            CreateRouteRequest::builder(
+                upstream.id,
+                MatchRules {
+                    http: Some(HttpMatch {
+                        methods: vec![HttpMethod::Get],
+                        path: "/v1/models".into(),
+                        query_allowlist: vec![],
+                        path_suffix_mode: PathSuffixMode::Append,
+                    }),
+                    grpc: None,
+                },
+            )
+            .build(),
+        )
+        .await
+        .unwrap();
+
+    // Send a WebSocket upgrade request to the non-WebSocket upstream.
+    let req = http::Request::builder()
+        .method(Method::GET)
+        .uri("/ws-reject-test/v1/models")
+        .header("upgrade", "websocket")
+        .header("connection", "Upgrade")
+        .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
+        .header("sec-websocket-version", "13")
+        .body(Body::Empty)
+        .unwrap();
+
+    let err = h
+        .facade()
+        .proxy_request(ctx, req)
+        .await
+        .expect_err("expected ProtocolError for rejected WebSocket upgrade");
+
+    assert!(
+        matches!(
+            err,
+            oagw_sdk::error::ServiceGatewayError::ProtocolError { .. }
+        ),
+        "expected ProtocolError, got {err:?}"
+    );
+}
+
 // WebSocket E2E: upgrade through real TCP, send text frame, receive echo.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn proxy_websocket_e2e_echo() {
@@ -1624,10 +1697,22 @@ async fn proxy_websocket_auth_injected_during_handshake() {
         .body(Body::Empty)
         .unwrap();
 
-    let response = h.facade().proxy_request(ctx, req).await.unwrap();
-    // The mock returns 200 (not 101), which is fine — we're testing auth injection,
-    // not the upgrade itself.
-    assert_eq!(response.status(), StatusCode::OK);
+    // The MockGuard returns 200 (it can't do a real WebSocket handshake),
+    // so the proxy correctly returns ProtocolError. The upgrade request was
+    // already sent to upstream before the response is checked, so
+    // guard.recorded_requests() still captures the outbound headers we need.
+    let err = h
+        .facade()
+        .proxy_request(ctx, req)
+        .await
+        .expect_err("mock returns 200, so upgrade should fail with ProtocolError");
+    assert!(
+        matches!(
+            err,
+            oagw_sdk::error::ServiceGatewayError::ProtocolError { .. }
+        ),
+        "expected ProtocolError, got {err:?}"
+    );
 
     let recorded = guard.recorded_requests().await;
     assert_eq!(recorded.len(), 1, "expected exactly 1 recorded request");

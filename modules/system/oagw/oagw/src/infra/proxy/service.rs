@@ -67,6 +67,8 @@ pub struct DataPlaneServiceImpl {
     websocket_close_timeout: Duration,
     /// Optional max WebSocket frame payload size (Close 1009 on exceed).
     websocket_max_frame_size: Option<usize>,
+    /// Idle timeout for SSE streaming connections (no data from upstream).
+    streaming_idle_timeout: Duration,
 }
 
 impl DataPlaneServiceImpl {
@@ -103,6 +105,7 @@ impl DataPlaneServiceImpl {
             websocket_idle_timeout: Duration::from_secs(300),
             websocket_close_timeout: Duration::from_secs(5),
             websocket_max_frame_size: None,
+            streaming_idle_timeout: Duration::from_secs(300),
         }
     }
 
@@ -145,6 +148,13 @@ impl DataPlaneServiceImpl {
     #[must_use]
     pub fn with_websocket_max_frame_size(mut self, size: Option<usize>) -> Self {
         self.websocket_max_frame_size = size;
+        self
+    }
+
+    /// Override the SSE streaming idle timeout.
+    #[must_use]
+    pub fn with_streaming_idle_timeout(mut self, timeout: Duration) -> Self {
+        self.streaming_idle_timeout = timeout;
         self
     }
 
@@ -203,6 +213,18 @@ impl DataPlaneServiceImpl {
         if let Some(rules) = pipeline.response_header_rules {
             headers::apply_response_header_rules(&mut resp_headers, rules);
         }
+
+        // Apply streaming lifecycle management for SSE responses:
+        // idle timeout and graceful shutdown awareness.
+        let resp_body_stream = if oagw_sdk::sse::is_server_events_response(&resp_headers) {
+            session_bridge::streaming_body_with_lifecycle(
+                resp_body_stream,
+                self.streaming_idle_timeout,
+                self.shutdown_rx.clone(),
+            )
+        } else {
+            resp_body_stream
+        };
 
         build_proxy_response(status, resp_headers, resp_body_stream, instance_uri)
     }
@@ -805,20 +827,10 @@ impl DataPlaneService for DataPlaneServiceImpl {
             })?;
 
             if status != http::StatusCode::SWITCHING_PROTOCOLS {
-                // Upstream rejected the upgrade — pass through the upstream response.
-                let mut resp_headers = resp_headers;
-                resp_headers.insert("x-oagw-error-source", HeaderValue::from_static("upstream"));
-                let error_body_stream =
-                    session_bridge::response_body_stream(&resp_headers, leftover, client_io);
-                return self
-                    .finalize_response(
-                        &pipeline,
-                        status,
-                        resp_headers,
-                        error_body_stream,
-                        instance_uri,
-                    )
-                    .await;
+                return Err(DomainError::ProtocolError {
+                    detail: format!("upstream rejected WebSocket upgrade with status {status}"),
+                    instance: instance_uri,
+                });
             }
 
             // Execute response guards on the 101.
@@ -1595,6 +1607,7 @@ mod tests {
         let pingora = crate::infra::proxy::pingora_proxy::PingoraProxy::new(
             Duration::from_secs(10),
             Duration::from_secs(30),
+            Duration::from_secs(3600),
         );
         let proxy = Arc::new(crate::infra::proxy::pingora_proxy::new_http_proxy(
             &server_conf,

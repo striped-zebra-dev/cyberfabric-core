@@ -546,6 +546,7 @@ impl TestDpBuilder {
         let pingora_proxy = crate::infra::proxy::pingora_proxy::PingoraProxy::new(
             Duration::from_secs(10),
             Duration::from_secs(30),
+            Duration::from_secs(3600),
         )
         .with_skip_upstream_tls_verify(self.skip_upstream_tls_verify);
         let proxy = Arc::new(crate::infra::proxy::pingora_proxy::new_http_proxy(
@@ -630,6 +631,7 @@ pub fn build_test_app_state(
                 websocket_idle_timeout_secs: 300,
                 websocket_close_timeout_secs: 5,
                 websocket_max_frame_size_bytes: None,
+                streaming_idle_timeout_secs: 300,
             },
         },
         facade,

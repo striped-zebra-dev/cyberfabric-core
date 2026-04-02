@@ -37,6 +37,17 @@ pub struct OagwConfig {
     /// Default: None (pass-through, no limit enforced).
     #[serde(default)]
     pub websocket_max_frame_size_bytes: Option<usize>,
+    /// Idle timeout in seconds for SSE streaming connections.
+    /// A connection with no data received from upstream for this duration
+    /// will be closed. Must be > 0. Default: 300 (5 minutes).
+    #[serde(default = "default_streaming_idle_timeout_secs")]
+    pub streaming_idle_timeout_secs: u64,
+    /// TTL in seconds for cached HTTP protocol version (ALPN) negotiation
+    /// results per upstream host. Avoids redundant ALPN re-negotiation on
+    /// every connection. Set to 0 to disable the cache entirely (all requests
+    /// will use ALPN H2H1 negotiation). Default: 3600 (1 hour).
+    #[serde(default = "default_protocol_cache_ttl_secs")]
+    pub protocol_cache_ttl_secs: u64,
 }
 
 impl Default for OagwConfig {
@@ -50,6 +61,8 @@ impl Default for OagwConfig {
             websocket_idle_timeout_secs: default_websocket_idle_timeout_secs(),
             websocket_close_timeout_secs: default_websocket_close_timeout_secs(),
             websocket_max_frame_size_bytes: None,
+            streaming_idle_timeout_secs: default_streaming_idle_timeout_secs(),
+            protocol_cache_ttl_secs: default_protocol_cache_ttl_secs(),
         }
     }
 }
@@ -78,6 +91,14 @@ fn default_websocket_close_timeout_secs() -> u64 {
     5
 }
 
+fn default_streaming_idle_timeout_secs() -> u64 {
+    300 // 5 minutes — same as websocket idle timeout
+}
+
+fn default_protocol_cache_ttl_secs() -> u64 {
+    3600 // 1 hour — per spec cpt-cf-oagw-algo-protocol-version-negotiation
+}
+
 impl OagwConfig {
     /// Validate configuration values. Returns an error for values that
     /// would cause broken runtime behaviour.
@@ -87,6 +108,9 @@ impl OagwConfig {
         }
         if self.websocket_close_timeout_secs == 0 {
             return Err("websocket_close_timeout_secs must be > 0".to_owned());
+        }
+        if self.streaming_idle_timeout_secs == 0 {
+            return Err("streaming_idle_timeout_secs must be > 0".to_owned());
         }
         Ok(())
     }
@@ -101,6 +125,7 @@ pub struct RuntimeConfig {
     pub websocket_idle_timeout_secs: u64,
     pub websocket_close_timeout_secs: u64,
     pub websocket_max_frame_size_bytes: Option<usize>,
+    pub streaming_idle_timeout_secs: u64,
 }
 
 impl From<&OagwConfig> for RuntimeConfig {
@@ -110,6 +135,7 @@ impl From<&OagwConfig> for RuntimeConfig {
             websocket_idle_timeout_secs: cfg.websocket_idle_timeout_secs,
             websocket_close_timeout_secs: cfg.websocket_close_timeout_secs,
             websocket_max_frame_size_bytes: cfg.websocket_max_frame_size_bytes,
+            streaming_idle_timeout_secs: cfg.streaming_idle_timeout_secs,
         }
     }
 }
@@ -159,6 +185,11 @@ impl fmt::Debug for OagwConfig {
                 "websocket_max_frame_size_bytes",
                 &self.websocket_max_frame_size_bytes,
             )
+            .field(
+                "streaming_idle_timeout_secs",
+                &self.streaming_idle_timeout_secs,
+            )
+            .field("protocol_cache_ttl_secs", &self.protocol_cache_ttl_secs)
             .finish()
     }
 }
@@ -208,6 +239,36 @@ mod tests {
     #[test]
     fn validate_accepts_nonzero_timeouts() {
         let config = OagwConfig::default();
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn protocol_cache_ttl_defaults_to_3600() {
+        let config = OagwConfig::default();
+        assert_eq!(config.protocol_cache_ttl_secs, 3600);
+    }
+
+    #[test]
+    fn streaming_idle_timeout_defaults_to_300() {
+        let config = OagwConfig::default();
+        assert_eq!(config.streaming_idle_timeout_secs, 300);
+    }
+
+    #[test]
+    fn validate_rejects_zero_streaming_idle_timeout() {
+        let config = OagwConfig {
+            streaming_idle_timeout_secs: 0,
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validate_accepts_zero_protocol_cache_ttl() {
+        let config = OagwConfig {
+            protocol_cache_ttl_secs: 0,
+            ..Default::default()
+        };
         assert!(config.validate().is_ok());
     }
 }
