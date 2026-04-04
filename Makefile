@@ -326,7 +326,6 @@ openapi:
 	@command -v curl >/dev/null || (echo "curl is required to generate OpenAPI spec" && exit 1)
 	@echo "Starting hyperspot-server to generate OpenAPI spec..."
 	@$(call start_server_and_wait,cargo run --bin hyperspot-server $(E2E_ARGS) -- --config config/quickstart.yaml,$(OPENAPI_URL),300); \
-	@$(call start_server_and_wait,cargo run --bin hyperspot-server $(E2E_ARGS) -- --config config/quickstart.yaml,$(OPENAPI_URL),300); \
 	echo "Fetching OpenAPI spec..."; \
 	mkdir -p $$(dirname "$(OPENAPI_OUT)"); \
 	curl -fsS "$(OPENAPI_URL)" -o "$(OPENAPI_OUT)"; \
@@ -679,7 +678,7 @@ build:
 all: build check test-sqlite e2e-local openapi
 	@echo ""
 	@echo "============================================================="
-	@echo "  CONTGRATULATIONS! All 'make all' tasks have been completed!"
+	@echo "  CONGRATULATIONS! All 'make all' tasks have been completed!"
 	@echo ""
 	@echo "  Next suggestions:"
 	@echo "    - make test-db        # run full DB integration tests"
