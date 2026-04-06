@@ -553,7 +553,7 @@ fuzz-corpus: fuzz-install
 
 # -------- Main targets --------
 
-.PHONY: all check ci build quickstart example mini-chat mini-chat-docker mini-chat-helm mini-chat-helm-template mini-chat-up mini-chat-down mini-chat-port-forward
+.PHONY: all check ci build cargo-build split-debug quickstart example mini-chat mini-chat-docker mini-chat-helm mini-chat-helm-template mini-chat-up mini-chat-down mini-chat-port-forward
 
 # Start server with quickstart config
 quickstart:
@@ -700,9 +700,19 @@ ci_docs: lychee
 ci: fmt clippy test-no-macros test-macros test-db deny test-users-info-pg lychee dylint dylint-test
 
 # Build the hyperspot-server release binary using the stable toolchain.
-# Feature set is read from config/e2e-features.txt when present.
-build:
+cargo-build:
 	cargo +stable build --release --bin hyperspot-server $(E2E_ARGS)
+
+# Split debug symbols into separate artifact(s) and strip the binary.
+# Requires platform tools: objcopy (Linux), dsymutil+strip (macOS).
+# On Windows MSVC the PDB is already separate; no extra tools needed.
+split-debug:
+	cargo xtask split-debug hyperspot-server
+
+# Build the release binary, then split debug symbols.
+# Use 'make cargo-build' if you don't need stripped artifacts or lack
+# platform debug-splitting tools (objcopy, dsymutil).
+build: cargo-build split-debug
 
 # Run all necessary quality checks and tests and then build the release binary
 all: build check test-sqlite e2e-local openapi

@@ -12,6 +12,7 @@ crate-type = ["cdylib"]
 [[example]]
 name = "forbidden_macros"
 path = "ui/forbidden_macros.rs"
+crate-type = ["lib"]
 
 [[example]]
 name = "allowed"
@@ -39,6 +40,10 @@ crate-type = ["proc-macro"]
 name = "forbidden_public_in_proc_macro"
 path = "ui/forbidden_public_in_proc_macro.rs"
 crate-type = ["proc-macro"]
+
+[[example]]
+name = "allowed_in_main"
+path = "ui/allowed_in_main.rs"
 
 [[example]]
 name = "allowed_in_tests"

@@ -32,6 +32,7 @@ impl EarlyLintPass for De1301NoPrintMacros {
         let mut v = ForbiddenMacroVisitor {
             cx,
             in_proc_macro_crate: is_proc_macro_crate(cx),
+            is_bin_crate: is_bin_crate(cx),
             allow_stack: Vec::new(),
         };
         v.visit_item(item);
@@ -77,6 +78,14 @@ fn is_proc_macro_crate(cx: &EarlyContext<'_>) -> bool {
         .any(|t| *t == CrateType::ProcMacro)
 }
 
+fn is_bin_crate(cx: &EarlyContext<'_>) -> bool {
+    cx.sess()
+        .opts
+        .crate_types
+        .iter()
+        .any(|t| *t == CrateType::Executable)
+}
+
 fn extract_simulated_path(path_str: &str) -> Option<String> {
     // Only check for simulated_dir in temporary paths (UI tests run in temp directories)
     let is_temp = path_str.contains("/tmp/")
@@ -105,6 +114,7 @@ fn extract_simulated_path(path_str: &str) -> Option<String> {
 struct ForbiddenMacroVisitor<'a, 'cx> {
     cx: &'a EarlyContext<'cx>,
     in_proc_macro_crate: bool,
+    is_bin_crate: bool,
     allow_stack: Vec<bool>,
 }
 
@@ -145,9 +155,12 @@ impl<'ast, 'a, 'cx> visit::Visitor<'ast> for ForbiddenMacroVisitor<'a, 'cx> {
         let parent_allow = self.allow_stack.last().copied().unwrap_or(false);
 
         match &item.kind {
-            ItemKind::Fn(..) => {
+            ItemKind::Fn(_fn_item) => {
+                let is_binary_entry =
+                    self.allow_stack.is_empty() && self.is_bin_crate;
                 let is_private = matches!(item.vis.kind, VisibilityKind::Inherited);
                 let allow_here = parent_allow
+                    || is_binary_entry
                     || is_test_item(&item.attrs)
                     || (self.in_proc_macro_crate
                         && (is_private || has_proc_macro_attr(&item.attrs)));

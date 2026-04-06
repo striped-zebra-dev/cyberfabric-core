@@ -1,4 +1,6 @@
-fn main() {
+// compile-flags: --crate-type=lib
+
+pub fn not_main() {
     // Should trigger DE1301 - Print macros
     println!("hello");
 

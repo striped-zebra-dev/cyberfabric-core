@@ -45,16 +45,28 @@ Application binaries may have legitimate reasons to print directly:
 - Early bootstrap diagnostics before logging is initialized
 - Very small tools where stdout is the primary interface
 
-### 4) Tests (`#[test]` / `#[tokio::test]` / `#[cfg(test)]`)
+### 4) Binary crates (top-level functions)
+
+All top-level functions in binary crates are allowed to use print macros.
+Binary crates are the application boundary — printing to stderr/stdout is
+the boundary-level handling that the lint's guidance recommends:
+
+- CLI-style UX output
+- Early bootstrap diagnostics before logging is initialized
+- Fatal error reporting in xtask / build tooling
+
+Functions inside nested modules within binary crates are still checked.
+
+### 5) Tests (`#[test]` / `#[tokio::test]` / `#[cfg(test)]`)
 
 Unit tests and test-only modules may use these macros for debug output and quick feedback.
 
 ## Examples
 
-### Forbidden
+### Forbidden (non-main functions)
 
 ```rust
-fn main() {
+fn helper() {
     println!("hello");
     dbg!(42);
 }
@@ -100,4 +112,5 @@ This lint includes UI tests covering:
 - Allowed usage in `apps/*`
 - Allowed usage in `build.rs`
 - Allowed usage in `proc-macro` crates
+- Allowed usage in binary crate top-level functions
 - Allowed usage in tests (`#[test]`, `#[tokio::test]`, `#[cfg(test)]`)
