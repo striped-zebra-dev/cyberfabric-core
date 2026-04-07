@@ -1,3 +1,4 @@
+// Updated: 2026-04-07 by Constructor Tech
 //! `OpenAI` Responses API adapter (`/v1/responses`).
 //!
 //! Implements [`LlmProvider`] by converting [`LlmRequest`] to the Responses

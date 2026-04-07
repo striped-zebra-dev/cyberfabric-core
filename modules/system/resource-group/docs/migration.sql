@@ -1,5 +1,5 @@
--- Created:  2026-03-06 by Constructor Tech
--- Updated:  2026-03-16 by Constructor Tech
+-- Created: 2026-03-06 by Constructor Tech
+-- Updated: 2026-03-16 by Constructor Tech
 
 -- ── GTS type path domain ─────────────────────────────────────────────────────
 -- GTS type identifier: single or chained, always ends with ~ (schema, not instance).

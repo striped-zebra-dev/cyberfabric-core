@@ -1,3 +1,4 @@
+# Updated: 2026-04-07 by Constructor Tech
 # Dylint Configuration for Hyperspot
 
 [workspace.metadata.dylint]
@@ -10,10 +11,6 @@ libraries = [
 # Remove entries as modules are migrated.
 [de1101_tests_in_separate_files]
 excluded_paths = [
-    "examples",
-    "apps",
-    "plugins",
-
     # libs/
     "libs/modkit",
     "libs/modkit-auth",
@@ -37,10 +34,7 @@ excluded_paths = [
 
     # modules/
     "modules/approval-service",
-    "modules/chat-engine",
-    "modules/credstore",
     "modules/file-parser",
-    "modules/file-storage",
     "modules/llm-gateway",
     "modules/mini-chat",
     "modules/model-registry",
@@ -50,14 +44,10 @@ excluded_paths = [
 
     # modules/system/
     "modules/system/api-gateway",
-    "modules/system/authn-resolver",
-    "modules/system/authz-resolver",
     "modules/system/grpc-hub",
     "modules/system/module-orchestrator",
     "modules/system/nodes-registry",
     "modules/system/oagw",
-    "modules/system/resource-group",
-    "modules/system/tenant-resolver",
     "modules/system/types",
     "modules/system/types-registry",
     "modules/system/types-sdk",

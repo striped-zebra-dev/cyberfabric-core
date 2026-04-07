@@ -1,3 +1,4 @@
+// Updated: 2026-04-07 by Constructor Tech
 //! vLLM Responses API adapter (`/v1/responses`).
 //!
 //! Implements [`LlmProvider`] for vLLM's OpenAI-compatible Responses API.

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Created: 2026-04-07 by Constructor Tech
 """Extract inline #[cfg(test)] mod tests { ... } blocks into separate *_tests.rs files.
 
 Usage:
@@ -97,7 +98,7 @@ def has_super_import(text):
 
 
 def process_file(fpath):
-    with open(fpath) as f:
+    with open(fpath, encoding="utf-8") as f:
         content = f.read()
     lines = content.split("\n")
 
@@ -124,14 +125,14 @@ def process_file(fpath):
     replacement.append(f'#[path = "{test_filename}"]')
     replacement.append(f"mod {stem}_tests;")
 
-    # Write source
-    new_lines = lines[:start] + replacement + [""]
-    with open(fpath, "w") as f:
+    # Write source — preserve any code after the test block
+    new_lines = lines[:start] + replacement + [""] + lines[end + 1:]
+    with open(fpath, "w", encoding="utf-8") as f:
         f.write("\n".join(new_lines))
 
     # Write test file
     test_filepath = os.path.join(os.path.dirname(fpath), test_filename)
-    with open(test_filepath, "w") as f:
+    with open(test_filepath, "w", encoding="utf-8") as f:
         f.write(test_content)
 
     print(f"  {fpath} -> {test_filename}")
@@ -140,7 +141,7 @@ def process_file(fpath):
 
 def find_cfg_test_items(fpath):
     """Find #[cfg(test)] on individual items (not modules) — these also trigger DE1101."""
-    with open(fpath) as f:
+    with open(fpath, encoding="utf-8") as f:
         content = f.read()
     lines = content.split("\n")
     items = []

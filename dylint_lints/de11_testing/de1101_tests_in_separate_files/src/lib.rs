@@ -1,3 +1,4 @@
+// Created: 2026-04-07 by Constructor Tech
 #![feature(rustc_private)]
 #![warn(unused_extern_crates)]
 
@@ -14,10 +15,16 @@ thread_local! {
 
 /// Known path prefixes for module directories, longest-first
 /// so that `modules/system/` matches before `modules/`.
-const MODULE_PREFIXES: &[&str] = &["libs/", "modules/system/", "modules/"];
-
-/// Top-level directories that are excluded wholesale.
-const TOP_LEVEL_DIRS: &[&str] = &["examples/", "apps/", "plugins/"];
+/// Top-level dirs (`examples/`, `apps/`, `plugins/`) are included so they
+/// go through the same segment-boundary check and config-driven exclusion.
+const MODULE_PREFIXES: &[&str] = &[
+    "libs/",
+    "modules/system/",
+    "modules/",
+    "examples/",
+    "apps/",
+    "plugins/",
+];
 
 #[derive(Default, serde::Deserialize)]
 struct Config {
@@ -38,14 +45,8 @@ impl De1101TestsInSeparateFiles {
     }
 
     fn is_in_scope(&self, normalized_path: &str) -> bool {
-        // Check top-level directories first (e.g. "examples/", "apps/").
-        for dir in TOP_LEVEL_DIRS {
-            if normalized_path.contains(dir) {
-                return !self.excluded_set.contains(&dir[..dir.len() - 1]);
-            }
-        }
-
-        // Try to extract a module key (e.g. "libs/modkit", "modules/system/oagw").
+        // Try to extract a module key (e.g. "libs/modkit", "modules/system/oagw",
+        // "examples/oop-modules").
         for prefix in MODULE_PREFIXES {
             if let Some(pos) = normalized_path.find(prefix) {
                 // Ensure match is at a path segment boundary, not inside
@@ -96,14 +97,8 @@ dylint_linting::impl_pre_expansion_lint! {
 enum TestViolation {
     /// Inline test code (`#[test]` or `#[cfg(test)] mod tests { ... }`) in a production file.
     InlineTestCode,
-    /// Test file reference does not resolve to `{source_stem}_tests`.
-    /// When `has_path_attr` is true, the `#[path]` value was checked;
-    /// otherwise the module name was checked.
-    WrongTestFileName {
-        expected: String,
-        actual: String,
-        has_path_attr: bool,
-    },
+    /// `#[path = "..."]` value does not match `{source_stem}_tests.rs`.
+    WrongPathAttr { expected: String, actual: String },
 }
 
 impl EarlyLintPass for De1101TestsInSeparateFiles {
@@ -150,25 +145,14 @@ impl EarlyLintPass for De1101TestsInSeparateFiles {
                         );
                     });
                 }
-                TestViolation::WrongTestFileName {
-                    expected,
-                    actual,
-                    has_path_attr,
-                } => {
+                TestViolation::WrongPathAttr { expected, actual } => {
                     cx.span_lint(DE1101_TESTS_IN_SEPARATE_FILES, item.span, |diag| {
-                        if has_path_attr {
-                            diag.primary_message(format!(
-                                "test module path `{actual}.rs` must reference `{expected}.rs` to match the source file (DE1101)",
-                            ));
-                            diag.help(format!(
-                                "use `#[path = \"{expected}.rs\"]` or remove `#[path]` and use `mod {expected};`"
-                            ));
-                        } else {
-                            diag.primary_message(format!(
-                                "test module `{actual}` must be named `{expected}` to match the source file (DE1101)",
-                            ));
-                            diag.help(format!("rename to `mod {expected};`"));
-                        }
+                        diag.primary_message(format!(
+                            "test module path `{actual}.rs` must reference `{expected}.rs` to match the source file (DE1101)",
+                        ));
+                        diag.help(format!(
+                            "use `#[path = \"{expected}.rs\"]` or remove `#[path]`"
+                        ));
                     });
                 }
             }
@@ -179,7 +163,7 @@ impl EarlyLintPass for De1101TestsInSeparateFiles {
 fn is_allowed_test_file(path: &str) -> bool {
     let file_name = path.rsplit('/').next().unwrap_or(path);
 
-    path.contains("/tests/") || file_name.ends_with("_test.rs") || file_name.ends_with("_tests.rs")
+    path.contains("/tests/") || file_name.ends_with("_tests.rs")
 }
 
 /// Extract the file stem from a normalized path.
@@ -246,26 +230,19 @@ fn find_test_violations(source: &str, source_stem: Option<&str>) -> Vec<TestViol
             }
 
             // Out-of-line mod declaration (e.g. `mod foo_tests;`).
+            // Without #[path]: any module name is accepted.
+            // With #[path]: value must be `{stem}_tests.rs` or `{stem}_test.rs`.
             if is_out_of_line_mod_decl(trimmed) {
-                if let Some(stem) = source_stem {
+                if let (Some(stem), Some(pv)) = (source_stem, &path_attr_value) {
                     if !reported_naming {
                         let expected = format!("{stem}_tests");
-                        let (actual, has_path) = if let Some(ref pv) = path_attr_value {
-                            // Use filename from #[path] value
-                            let filename = pv.rsplit('/').next().unwrap_or(pv);
-                            let name = filename.strip_suffix(".rs").unwrap_or(filename);
-                            (name.to_string(), true)
-                        } else {
-                            // Use the module name
-                            let name = extract_mod_name(trimmed).unwrap_or("");
-                            (name.to_string(), false)
-                        };
+                        let filename = pv.rsplit('/').next().unwrap_or(pv);
+                        let actual = filename.strip_suffix(".rs").unwrap_or(filename);
 
                         if actual != expected {
-                            violations.push(TestViolation::WrongTestFileName {
+                            violations.push(TestViolation::WrongPathAttr {
                                 expected,
-                                actual,
-                                has_path_attr: has_path,
+                                actual: actual.to_string(),
                             });
                             reported_naming = true;
                         }
@@ -297,7 +274,16 @@ fn is_comment_or_blank_line(line: &str) -> bool {
 }
 
 fn compact(line: &str) -> String {
-    line.chars().filter(|ch| !ch.is_whitespace()).collect()
+    // Strip trailing line comments before removing whitespace, so that
+    // `#[cfg(test)] // comment` compacts to `#[cfg(test)]` and is detected.
+    let without_comment = match line.find("//") {
+        Some(pos) => &line[..pos],
+        None => line,
+    };
+    without_comment
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect()
 }
 
 fn is_direct_test_attr(line: &str) -> bool {
@@ -365,7 +351,7 @@ fn split_top_level_args(input: &str) -> Vec<&str> {
 
 /// Returns `true` when the compacted line is a `#[path = "..."]` attribute.
 fn is_path_attr(compact_line: &str) -> bool {
-    compact_line.starts_with("#[path=") || compact_line.starts_with("#[path=\"")
+    compact_line.starts_with("#[path=")
 }
 
 /// Extract the string value from a `#[path = "..."]` attribute.
@@ -381,6 +367,22 @@ fn extract_path_attr_value(line: &str) -> Option<String> {
     Some(rest[..end].to_string())
 }
 
+/// Strip a leading visibility qualifier from a line, including `pub(in path)`.
+fn strip_visibility(line: &str) -> &str {
+    if let Some(rest) = line.strip_prefix("pub(in ") {
+        // Find the closing ')' and skip past it plus any trailing space.
+        if let Some(close) = rest.find(')') {
+            let after = &rest[close + 1..];
+            return after.strip_prefix(' ').unwrap_or(after);
+        }
+    }
+    line.strip_prefix("pub(crate) ")
+        .or_else(|| line.strip_prefix("pub(super) "))
+        .or_else(|| line.strip_prefix("pub(self) "))
+        .or_else(|| line.strip_prefix("pub "))
+        .unwrap_or(line)
+}
+
 /// Extract the module name from an out-of-line mod declaration.
 /// `"mod foo_tests;"` → `Some("foo_tests")`
 /// `"pub(crate) mod foo_tests;"` → `Some("foo_tests")`
@@ -388,31 +390,12 @@ fn extract_mod_name(line: &str) -> Option<&str> {
     if !line.ends_with(';') {
         return None;
     }
-
-    let without_visibility = line
-        .strip_prefix("pub ")
-        .or_else(|| line.strip_prefix("pub(crate) "))
-        .or_else(|| line.strip_prefix("pub(super) "))
-        .or_else(|| line.strip_prefix("pub(self) "))
-        .unwrap_or(line);
-
-    let name_with_semi = without_visibility.strip_prefix("mod ")?;
+    let name_with_semi = strip_visibility(line).strip_prefix("mod ")?;
     Some(name_with_semi.trim_end_matches(';').trim())
 }
 
 fn is_out_of_line_mod_decl(line: &str) -> bool {
-    if !line.ends_with(';') {
-        return false;
-    }
-
-    let without_visibility = line
-        .strip_prefix("pub ")
-        .or_else(|| line.strip_prefix("pub(crate) "))
-        .or_else(|| line.strip_prefix("pub(super) "))
-        .or_else(|| line.strip_prefix("pub(self) "))
-        .unwrap_or(line);
-
-    without_visibility.starts_with("mod ")
+    line.ends_with(';') && strip_visibility(line).starts_with("mod ")
 }
 
 fn is_extern_crate_alias(line: &str) -> bool {
@@ -503,7 +486,8 @@ fn main() {}
     }
 
     #[test]
-    fn test_find_violations_wrong_name() {
+    fn test_find_violations_any_mod_name_without_path_ok() {
+        // Without #[path], any module name is accepted.
         let source = r#"
 #[cfg(test)]
 mod tests;
@@ -511,12 +495,7 @@ mod tests;
 fn main() {}
 "#;
         let violations = find_test_violations(source, Some("handler"));
-        assert_eq!(violations.len(), 1);
-        assert!(matches!(
-            &violations[0],
-            super::TestViolation::WrongTestFileName { expected, actual, has_path_attr }
-            if expected == "handler_tests" && actual == "tests" && !has_path_attr
-        ));
+        assert!(violations.is_empty(), "any mod name should be accepted without #[path]");
     }
 
     #[test]
@@ -532,8 +511,8 @@ fn main() {}
         assert_eq!(violations.len(), 1);
         assert!(matches!(
             &violations[0],
-            super::TestViolation::WrongTestFileName { expected, actual, has_path_attr }
-            if expected == "handler_tests" && actual == "dto_tests" && *has_path_attr
+            super::TestViolation::WrongPathAttr { expected, actual }
+            if expected == "handler_tests" && actual == "dto_tests"
         ));
     }
 

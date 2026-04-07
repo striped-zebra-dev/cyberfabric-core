@@ -1,3 +1,4 @@
+// Updated: 2026-04-07 by Constructor Tech
 //! Provider-agnostic LLM integration layer.
 //!
 //! This module defines shared types, the [`LlmProvider`] trait, and

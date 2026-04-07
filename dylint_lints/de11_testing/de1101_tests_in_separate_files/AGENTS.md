@@ -1,74 +1,58 @@
-# DE1101 UI Test Guide
+<!-- Created: 2026-04-07 by Constructor Tech -->
+# DE1101: Enabling the lint for a new module
 
-## Structure
+## Quick start
 
-Each UI test = 3 files:
-1. `ui/<name>.rs` — Rust source (the test input)
-2. `ui/<name>.stderr` — expected compiler output (empty if no errors)
-3. `Cargo.toml` — must have `[[example]]` entry for the test
+Three steps to enable DE1101 for a module that's currently excluded:
 
-## Writing a test file (`ui/<name>.rs`)
+### 1. Remove the module from `dylint.toml` exclusions
 
-```rust
-// simulated_dir=/workspace/modules/system/resource-group/resource-group/src/api/rest/
-#[cfg(test)]
-// Should trigger DE1101 - tests must be in separate files
-mod tests;
-
-fn main() {}
-```
-
-Rules:
-- First line: `// simulated_dir=...` sets the simulated module path
-- Every triggering line MUST have a comment **on the line above**: `// Should trigger DE1101 - tests must be in separate files`
-- Every non-triggering line MUST have: `// Should not trigger DE1101 - tests must be in separate files`
-- Always end with `fn main() {}`
-
-## What the lint checks
-
-| Violation | Example | Error? |
-|---|---|---|
-| Inline test code | `#[cfg(test)] mod tests { ... }` | Yes |
-| Wrong module name | `mod tests;` in `handler.rs` (should be `mod handler_tests;`) | Yes |
-| Wrong `#[path]` value | `#[path = "foo.rs"]` in `handler.rs` (should be `handler_tests.rs`) | Yes |
-| Correct module name | `mod handler_tests;` in `handler.rs` | No |
-| Correct `#[path]` value | `#[path = "handler_tests.rs"]` in `handler.rs` | No |
-
-**Key rule**: for `<name>.rs`, the test file must be `<name>_tests.rs` — either via `mod <name>_tests;` or `#[path = "<name>_tests.rs"]`.
-
-## Creating the `.stderr` file
-
-1. Create `.rs` file and empty `.stderr`
-2. Add `[[example]]` to `Cargo.toml`
-3. Run `cargo test tests::ui_examples`
-4. Copy "normalized stderr" from the failure output into `.stderr`
-5. For no-error cases, `.stderr` must be a **zero-byte** file (not even a newline)
-
-## Cargo.toml entry
+Open `dylint.toml` in the workspace root and delete the module's line from `[de1101_tests_in_separate_files].excluded_paths`:
 
 ```toml
-[[example]]
-name = "<name>"
-path = "ui/<name>.rs"
+[de1101_tests_in_separate_files]
+excluded_paths = [
+    # ...
+    # "modules/my-module",   ← delete this line
+    # ...
+]
 ```
 
-## Extracting inline tests automatically
+### 2. Extract inline tests
 
-Use `extract_tests.py` to batch-extract inline `#[cfg(test)] mod tests { ... }` blocks into separate `*_tests.rs` files:
+Run the extraction script from the workspace root:
 
 ```sh
-python3 extract_tests.py <directory>
+python3 dylint_lints/de11_testing/de1101_tests_in_separate_files/extract_tests.py .
 ```
 
-The script recursively processes all `.rs` files in `<directory>`:
-- Extracts inline test module body into `<stem>_tests.rs`
-- Replaces the inline block with `#[cfg(test)] #[path = "<stem>_tests.rs"] mod <stem>_tests;`
-- Preserves `#[cfg_attr(coverage_nightly, coverage(off))]` if present
-- Reports `#[cfg(test)]` on individual items (structs, impls) that need manual attention
+The script will:
+- Find all `#[cfg(test)] mod tests { ... }` inline blocks in `.rs` files
+- Extract each test body into a `<stem>_tests.rs` file next to the source
+- Replace the inline block with `#[cfg(test)] #[path = "<stem>_tests.rs"] mod <stem>_tests;`
+- Print `WARN` for `#[cfg(test)]` on individual items (structs, impls) — fix those manually
+- Skip `tests/`, `ui/`, `target/`, `.git/` directories automatically
 
-## Running tests
+### 3. Format and verify
 
 ```sh
-cargo test                      # all tests
-cargo test tests::ui_examples   # only UI tests
+cargo fmt --all
+make check
 ```
+
+`make check` runs fmt, clippy, dylint, and all tests. If it passes, you're done.
+
+## Common issues after extraction
+
+| Problem | Cause | Fix |
+|---------|-------|-----|
+| `unused import: super::*` | Test doesn't use parent module items | Remove `use super::*;` line |
+| Clippy lint fires in test file | Test code was hidden behind `#[cfg(test)]`, now visible to clippy | Add `#![allow(clippy::the_lint)]` at top of test file |
+| `#[cfg(test)]` on individual items | Script only extracts `mod` blocks, not standalone items | Move manually or leave as-is (these don't trigger DE1101) |
+
+## What the lint enforces
+
+For any `.rs` file in scope:
+- No inline `#[test]` or `#[cfg(test)] mod ... { }` blocks
+- Test module name must be `{source_stem}_tests` (e.g. `handler.rs` → `mod handler_tests;`)
+- If `#[path = "..."]` is used, it must point to `{source_stem}_tests.rs`

@@ -1,3 +1,4 @@
+// Updated: 2026-04-07 by Constructor Tech
 //! Scenario-based tests demonstrating worker infrastructure behaviour in
 //! realistic settings. Each test tells a story — the name describes the
 //! situation, the body shows how the worker handles it.

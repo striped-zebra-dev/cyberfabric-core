@@ -1,3 +1,4 @@
+// Created: 2026-04-07 by Constructor Tech
 #![allow(clippy::non_ascii_literal, clippy::str_to_string)]
 use super::*;
 use crate::infra::llm::{LlmMessage, llm_request};

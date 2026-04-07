@@ -1,3 +1,4 @@
+// Updated: 2026-04-07 by Constructor Tech
 #![forbid(unsafe_code)]
 
 //! Serde support for the `humantime` crate.

@@ -1,3 +1,4 @@
+// Created: 2026-04-07 by Constructor Tech
 #![allow(clippy::str_to_string)]
 use super::*;
 use crate::domain::llm::WebSearchContextSize;
