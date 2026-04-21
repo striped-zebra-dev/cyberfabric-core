@@ -20,7 +20,7 @@ from lib.platform import (
     stop_process_tree,
 )
 
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 PYTHON = sys.executable or "python"
 
 
@@ -532,7 +532,7 @@ def cmd_e2e_docker(args):
 
 def cmd_dylint(_args):
     step("Building dylint lints")
-    dylint_dir = os.path.join(PROJECT_ROOT, "dylint_lints")
+    dylint_dir = os.path.join(PROJECT_ROOT, "tools/dylint_lints")
     run_cmd(["cargo", "build", "--release"], cwd=dylint_dir)
     # Copy toolchain-suffixed names similar to Makefile
     rustc_host = (
@@ -599,14 +599,14 @@ def cmd_dylint(_args):
 
 def cmd_dylint_test(_args):
     step("Running dylint tests")
-    dylint_dir = os.path.join(PROJECT_ROOT, "dylint_lints")
+    dylint_dir = os.path.join(PROJECT_ROOT, "tools/dylint_lints")
     run_cmd(["cargo", "test"], cwd=dylint_dir)
     print("Dylint tests passed")
 
 
 def cmd_dylint_list(_args):
     step("Listing dylint lints")
-    dylint_dir = os.path.join(PROJECT_ROOT, "dylint_lints")
+    dylint_dir = os.path.join(PROJECT_ROOT, "tools/dylint_lints")
     target_release = os.path.join(dylint_dir, "target", "release")
     dylint_libs = sorted(
         [
@@ -650,25 +650,22 @@ def ensure_cargo_fuzz():
 
 def cmd_fuzz_build(_args):
     step("Building fuzz targets")
-    fuzz_dir = os.path.join(PROJECT_ROOT, "fuzz")
     ensure_cargo_fuzz()
 
     # Build all fuzz targets (no TARGET argument = build all)
-    run_cmd(["cargo", "+nightly", "fuzz", "build"], cwd=fuzz_dir)
+    run_cmd(["cargo", "+nightly", "fuzz", "build", "--fuzz-dir", "tools/fuzz"], cwd=PROJECT_ROOT)
     print("All fuzz targets built successfully")
 
 
 def cmd_fuzz_list(_args):
     step("Listing fuzz targets")
-    fuzz_dir = os.path.join(PROJECT_ROOT, "fuzz")
     ensure_cargo_fuzz()
 
-    run_cmd(["cargo", "+nightly", "fuzz", "list"], cwd=fuzz_dir)
+    run_cmd(["cargo", "+nightly", "fuzz", "list", "--fuzz-dir", "tools/fuzz"], cwd=PROJECT_ROOT)
 
 
 def cmd_fuzz_run(args):
     step(f"Running fuzz target: {args.target}")
-    fuzz_dir = os.path.join(PROJECT_ROOT, "fuzz")
     ensure_cargo_fuzz()
 
     fuzz_seconds = args.seconds or 60
@@ -676,14 +673,14 @@ def cmd_fuzz_run(args):
         print("ERROR: --seconds must be a positive integer")
         sys.exit(1)
     fuzz_cmd = [
-        "cargo", "+nightly", "fuzz", "run", args.target,
+        "cargo", "+nightly", "fuzz", "run", "--fuzz-dir", "tools/fuzz", args.target,
         "--", f"-max_total_time={fuzz_seconds}"
     ]
 
-    result = run_cmd_allow_fail(fuzz_cmd, cwd=fuzz_dir)
+    result = run_cmd_allow_fail(fuzz_cmd, cwd=PROJECT_ROOT)
 
     if result.returncode != 0:
-        print(f"Fuzzing found issues. Check fuzz/artifacts/{args.target}/")
+        print(f"Fuzzing found issues. Check tools/fuzz/artifacts/{args.target}/")
         sys.exit(result.returncode)
 
     print(f"Fuzzing completed successfully ({fuzz_seconds}s)")
@@ -691,15 +688,14 @@ def cmd_fuzz_run(args):
 
 def cmd_fuzz(args):
     step("Running smoke test fuzzing on all targets")
-    fuzz_dir = os.path.join(PROJECT_ROOT, "fuzz")
 
     # Build all targets first
     cmd_fuzz_build(args)
 
     # Get list of targets
     result = subprocess.run(
-        ["cargo", "+nightly", "fuzz", "list"],
-        cwd=fuzz_dir,
+        ["cargo", "+nightly", "fuzz", "list", "--fuzz-dir", "tools/fuzz"],
+        cwd=PROJECT_ROOT,
         capture_output=True,
         text=True
     )
@@ -723,11 +719,11 @@ def cmd_fuzz(args):
 
         print(f"\n=== Fuzzing {target} for {smoke_time}s ===")
         fuzz_cmd = [
-            "cargo", "+nightly", "fuzz", "run", target,
+            "cargo", "+nightly", "fuzz", "run", "--fuzz-dir", "tools/fuzz", target,
             "--", f"-max_total_time={smoke_time}"
         ]
 
-        result = run_cmd_allow_fail(fuzz_cmd, cwd=fuzz_dir)
+        result = run_cmd_allow_fail(fuzz_cmd, cwd=PROJECT_ROOT)
 
         if result.returncode != 0:
             failed_targets.append(target)
@@ -737,7 +733,7 @@ def cmd_fuzz(args):
 
     if failed_targets:
         print(f"\n❌ Fuzzing found issues in: {', '.join(failed_targets)}")
-        print("Check fuzz/artifacts/ for crash details")
+        print("Check tools/fuzz/artifacts/ for crash details")
         sys.exit(1)
 
     print(f"\n✅ All fuzz targets passed ({smoke_time}s each)")
@@ -745,7 +741,7 @@ def cmd_fuzz(args):
 
 def cmd_fuzz_clean(_args):
     step("Cleaning fuzzing artifacts")
-    fuzz_dir = os.path.join(PROJECT_ROOT, "fuzz")
+    fuzz_dir = os.path.join(PROJECT_ROOT, "tools/fuzz")
 
     artifacts_dir = os.path.join(fuzz_dir, "artifacts")
     corpus_dir = os.path.join(fuzz_dir, "corpus")

@@ -283,7 +283,7 @@ cargo run -p gts-docs-validator -- --json docs                   # JSON output
 cargo run -p gts-docs-validator -- --verbose docs                # Verbose output
 ```
 
-**Location:** [`apps/gts-docs-validator/`](../apps/gts-docs-validator/)
+**Location:** [`apps/gts-docs-validator/`](../../apps/gts-docs-validator/)
 
 **Exit codes:**
 - `0` - All GTS identifiers are valid
@@ -341,7 +341,7 @@ Use `make dylint` - it auto-rebuilds if sources changed.
 
 ## Resources
 
-- [Makefile](../Makefile) - Tool comparison table (line 60)
+- [Makefile](../../Makefile) - Tool comparison table (line 60)
 - [Dylint Docs](https://github.com/trailofbits/dylint)
 - [Clippy Lint Development](https://doc.rust-lang.org/nightly/clippy/development/index.html)
 

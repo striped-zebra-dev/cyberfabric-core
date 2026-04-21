@@ -57,5 +57,5 @@ This lint is designed for Test-Driven Development:
 
 ## See Also
 
-- [`#[domain_model]` macro documentation](../../../libs/modkit-macros/src/domain_model.rs)
-- [Domain Layer Architecture](../../../docs/modkit_unified_system/02_module_layout_and_sdk_pattern.md)
+- [`#[domain_model]` macro documentation](../../../../libs/modkit-macros/src/domain_model.rs)
+- [Domain Layer Architecture](../../../../docs/modkit_unified_system/02_module_layout_and_sdk_pattern.md)

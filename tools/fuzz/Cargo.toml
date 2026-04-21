@@ -11,7 +11,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 
 # Dependencies for fuzzing internal crates
-modkit-odata = { package = "cf-modkit-odata", path = "../libs/modkit-odata", features = [] }
+modkit-odata = { package = "cf-modkit-odata", path = "../../libs/modkit-odata", features = [] }
 
 [[bin]]
 name = "fuzz_odata_filter"

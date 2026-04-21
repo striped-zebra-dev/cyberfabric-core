@@ -25,7 +25,7 @@ debug = "line-tables-only"
 members = [
     "apps/hyperspot-server",
     "apps/gts-docs-validator",
-    "xtask",
+    "tools/xtask",
     "libs/modkit",
     "libs/modkit-macros",
     "libs/modkit-macros-tests",
@@ -85,11 +85,11 @@ members = [
     "modules/mini-chat/mini-chat-sdk",
     "modules/mini-chat/mini-chat",
 ]
-exclude = ["fuzz"]
+exclude = ["tools/fuzz"]
 resolver = "3"
 
 # Note: dylint_lints is a separate workspace for custom linters
-# See dylint_lints/README.md for usage instructions
+# See tools/dylint_lints/README.md for usage instructions
 
 [workspace.lints.rust]
 deprecated = "warn"

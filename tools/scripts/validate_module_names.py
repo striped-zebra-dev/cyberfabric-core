@@ -72,9 +72,9 @@ def find_modules(modules_dir: Path) -> List[Path]:
 
 
 def main() -> int:
-    # Find workspace root (script is in scripts/, workspace root is parent)
+    # Find workspace root (script is in tools/scripts/, workspace root is grandparent)
     script_dir = Path(__file__).parent
-    workspace_root = script_dir.parent
+    workspace_root = script_dir.parent.parent
     modules_dir = workspace_root / "modules"
     
     if not modules_dir.exists():
