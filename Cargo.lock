@@ -1512,7 +1512,7 @@ dependencies = [
  "urlencoding",
  "utoipa",
  "uuid",
- "zip 2.4.2",
+ "zip 4.6.1",
 ]
 
 [[package]]
