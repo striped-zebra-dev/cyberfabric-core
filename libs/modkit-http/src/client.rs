@@ -38,7 +38,7 @@ pub type BufferedService = Buffer<Request<Full<Bytes>>, ServiceFuture>;
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```no_run
 /// // Just store the client directly - no Mutex needed!
 /// struct MyService {
 ///     http: HttpClient,
@@ -92,7 +92,7 @@ impl HttpClient {
     ///
     /// Query parameters must be encoded into the URL externally (e.g. via `url::Url`):
     ///
-    /// ```ignore
+    /// ```no_run
     /// use url::Url;
     ///
     /// let mut url = Url::parse("https://api.example.com/search")?;
@@ -107,7 +107,7 @@ impl HttpClient {
     ///
     /// # Example
     ///
-    /// ```ignore
+    /// ```no_run
     /// // Simple GET
     /// let resp = client.get("https://api.example.com/data").send().await?;
     /// ```
@@ -131,7 +131,7 @@ impl HttpClient {
     ///
     /// # Example
     ///
-    /// ```ignore
+    /// ```no_run
     /// // POST with JSON body
     /// let resp = client
     ///     .post("https://api.example.com/users")
@@ -163,7 +163,7 @@ impl HttpClient {
     ///
     /// # Example
     ///
-    /// ```ignore
+    /// ```no_run
     /// let resp = client
     ///     .put("https://api.example.com/resource/1")
     ///     .json(&UpdateData { value: 42 })?
@@ -187,7 +187,7 @@ impl HttpClient {
     ///
     /// # Example
     ///
-    /// ```ignore
+    /// ```no_run
     /// let resp = client
     ///     .patch("https://api.example.com/resource/1")
     ///     .json(&PatchData { field: "new_value" })?
@@ -211,7 +211,7 @@ impl HttpClient {
     ///
     /// # Example
     ///
-    /// ```ignore
+    /// ```no_run
     /// let resp = client
     ///     .delete("https://api.example.com/resource/42")
     ///     .header("authorization", "Bearer token")
@@ -223,6 +223,69 @@ impl HttpClient {
             self.service.clone(),
             self.max_body_size,
             http::Method::DELETE,
+            url.to_owned(),
+            self.transport_security,
+        )
+    }
+
+    /// Create a HEAD request builder.
+    ///
+    /// HEAD requests are like GET but the server returns only headers — the
+    /// response body is empty per RFC 9110 §9.3.2. Use for cheap existence
+    /// checks (`Content-Length` / `ETag` probes) without paying for the
+    /// payload.
+    ///
+    /// HEAD is idempotent, so the SDK's retry policy retries it on transient
+    /// upstream failures the same way it retries GET.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// let resp = client.head("https://api.example.com/big-blob").send().await?;
+    /// let len = resp
+    ///     .headers()
+    ///     .get(http::header::CONTENT_LENGTH)
+    ///     .and_then(|v| v.to_str().ok())
+    ///     .and_then(|s| s.parse::<u64>().ok());
+    /// ```
+    pub fn head(&self, url: &str) -> RequestBuilder {
+        RequestBuilder::new(
+            self.service.clone(),
+            self.max_body_size,
+            http::Method::HEAD,
+            url.to_owned(),
+            self.transport_security,
+        )
+    }
+
+    /// Create an OPTIONS request builder.
+    ///
+    /// OPTIONS is the wire form of CORS preflight and capability discovery.
+    /// Servers typically respond with `Allow:` and CORS-preflight headers and
+    /// no body. The SDK installs no CORS middleware — the response is
+    /// returned to the caller verbatim.
+    ///
+    /// OPTIONS is idempotent and is retried by default on transient failures
+    /// the same way GET is.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// let resp = client
+    ///     .options("https://api.example.com/resource")
+    ///     .send()
+    ///     .await?;
+    /// let allow = resp
+    ///     .headers()
+    ///     .get(http::header::ALLOW)
+    ///     .and_then(|v| v.to_str().ok())
+    ///     .map(str::to_owned);
+    /// ```
+    pub fn options(&self, url: &str) -> RequestBuilder {
+        RequestBuilder::new(
+            self.service.clone(),
+            self.max_body_size,
+            http::Method::OPTIONS,
             url.to_owned(),
             self.transport_security,
         )
@@ -841,6 +904,50 @@ mod tests {
         let resp = client.delete(&url).send().await.unwrap();
 
         assert_eq!(resp.status(), hyper::StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_http_client_head_returns_headers_no_body() {
+        let server = MockServer::start();
+        let _m = server.mock(|when, then| {
+            when.method(Method::HEAD).path("/probe");
+            then.status(200)
+                .header("content-length", "12345")
+                .header("etag", "\"abc\"");
+        });
+
+        let client = test_client();
+        let url = format!("{}/probe", server.base_url());
+        let resp = client.head(&url).send().await.unwrap();
+
+        assert_eq!(resp.status(), hyper::StatusCode::OK);
+        assert_eq!(
+            resp.headers()
+                .get("content-length")
+                .and_then(|v| v.to_str().ok()),
+            Some("12345"),
+        );
+        let body = resp.bytes().await.unwrap();
+        assert!(body.is_empty(), "HEAD response body must be empty");
+    }
+
+    #[tokio::test]
+    async fn test_http_client_options_returns_allow_header() {
+        let server = MockServer::start();
+        let _m = server.mock(|when, then| {
+            when.method(Method::OPTIONS).path("/resource");
+            then.status(204).header("allow", "GET, POST, PUT, DELETE");
+        });
+
+        let client = test_client();
+        let url = format!("{}/resource", server.base_url());
+        let resp = client.options(&url).send().await.unwrap();
+
+        assert_eq!(resp.status(), hyper::StatusCode::NO_CONTENT);
+        assert_eq!(
+            resp.headers().get("allow").and_then(|v| v.to_str().ok()),
+            Some("GET, POST, PUT, DELETE"),
+        );
     }
 
     #[tokio::test]
